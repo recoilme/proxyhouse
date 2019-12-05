@@ -13,6 +13,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -36,7 +39,7 @@ var (
 	keepalive = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	fwd       = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
 	delim     = flag.String("delim", ",", "body delimiter")
-	syncsec   = flag.Int("syncsec", 1, "sync interval, in seconds")
+	syncsec   = flag.Int("syncsec", 2, "sync interval, in seconds")
 )
 
 type conn struct {
@@ -51,6 +54,8 @@ type Store struct {
 }
 
 var store = &Store{Req: make(map[string][]byte, 0)}
+var in uint32  //in requests
+var out uint32 //out requests
 
 func main() {
 	flag.Parse()
@@ -59,8 +64,13 @@ func main() {
 
 	var totalConnections uint32 // Total number of connections opened since the server started running
 	var currConnections int32   // Number of open connections
+
 	atomic.StoreUint32(&totalConnections, 0)
 	atomic.StoreInt32(&currConnections, 0)
+	atomic.StoreUint32(&in, 0)
+	atomic.StoreUint32(&out, 0)
+
+	checkErr()
 
 	// Wait for interrupt signal to gracefully shutdown the server with
 	// setup signal catching
@@ -77,6 +87,8 @@ func main() {
 		}
 
 		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
+		fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
+
 		time.Sleep(time.Duration(*syncsec*2) * time.Second)
 		os.Exit(1)
 	}()
@@ -207,10 +219,9 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	} else {
 		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
 	}
-
 	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
 	store.Unlock()
-	//println("body:", string(bufbody.Bytes()))
+	atomic.AddUint32(&in, 1)
 	return b[len(b):], []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
 
@@ -225,30 +236,6 @@ func (store *Store) backgroundManager(interval int) {
 			case <-ctx.Done():
 				return
 			default:
-
-				//sender
-				send := func(key string, val *bytes.Buffer) (err error) {
-					//send
-					req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
-					if err != nil {
-						fmt.Printf("%s\n", err)
-						db := fmt.Sprintf("errors/%d", time.Now().Unix())
-						pudge.Set(db, key, val.Bytes())
-						pudge.Close(db)
-						return
-					}
-					resp, err := http.DefaultClient.Do(req)
-					if err != nil {
-						fmt.Printf("%s\n", err)
-						db := fmt.Sprintf("errors/%d", time.Now().Unix())
-						pudge.Set(db, key, val.Bytes())
-						pudge.Close(db)
-						return
-					}
-					defer resp.Body.Close()
-					return
-				}
-
 				//keys reader
 				store.RLock()
 				keys := make([]string, 0)
@@ -271,10 +258,97 @@ func (store *Store) backgroundManager(interval int) {
 					}
 					store.Unlock()
 					//send 2 ch
-					go send(key, val)
+					atomic.AddUint32(&out, 1)
+					go send(key, val, true)
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
 			}
 		}
 	}()
+}
+
+//sender
+func send(key string, val *bytes.Buffer, silent bool) (err error) {
+	//send
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		if silent {
+			db := fmt.Sprintf("errors/%d", time.Now().Unix())
+			pudge.Set(db, key, val.Bytes())
+			pudge.Close(db)
+		}
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		if silent {
+			db := fmt.Sprintf("errors/%d", time.Now().Unix())
+			pudge.Set(db, key, val.Bytes())
+			pudge.Close(db)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	return
+}
+
+func checkErr() {
+	list, err := filePathWalkDir("errors")
+	if err != nil {
+		if err.Error() != "lstat errors: no such file or directory" {
+			panic(err)
+		} else {
+			//no errors
+			return
+		}
+	}
+	sort.Sort(sort.StringSlice(list))
+	for _, file := range list {
+		//println(file)
+		db, err := pudge.Open("errors/"+file, nil)
+
+		if err != nil {
+			panic(err)
+		}
+		keys, err := db.Keys(nil, 0, 0, true)
+		if err != nil {
+			panic(err)
+		}
+		for _, key := range keys {
+			//println(key)
+			var val []byte
+			err := db.Get(key, &val)
+			if err != nil {
+				panic(err)
+			}
+			buf := new(bytes.Buffer)
+			io.Copy(buf, bytes.NewReader(val))
+			err = send(string(key), buf, false)
+
+			if err != nil {
+				panic(err)
+			}
+		}
+		db.DeleteFile()
+	}
+}
+
+func filePathWalkDir(root string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Println(err.Error())
+			return err
+		}
+		if !info.IsDir() {
+			if !strings.HasSuffix(path, ".idx") {
+				files = append(files, filepath.Base(path))
+			}
+
+		}
+		return nil
+	})
+	return files, err
 }
