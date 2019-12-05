@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	_ "expvar"
 
+	"github.com/recoilme/pudge"
 	"github.com/tidwall/evio"
 )
 
@@ -32,6 +34,9 @@ var (
 	loops     = flag.Int("loops", -1, "num loops")
 	balance   = flag.String("balance", "random", "balance - random, round-robin or least-connections")
 	keepalive = flag.Int("keepalive", 10, "keepalive connection, in seconds")
+	fwd       = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	delim     = flag.String("delim", ",", "body delimiter")
+	syncsec   = flag.Int("syncsec", 1, "sync interval, in seconds")
 )
 
 type conn struct {
@@ -41,13 +46,16 @@ type conn struct {
 
 type Store struct {
 	sync.RWMutex
-	Req map[string][]byte
+	Req          map[string][]byte
+	cancelSyncer context.CancelFunc
 }
 
 var store = &Store{Req: make(map[string][]byte, 0)}
 
 func main() {
 	flag.Parse()
+
+	store.backgroundManager(*syncsec)
 
 	var totalConnections uint32 // Total number of connections opened since the server started running
 	var currConnections int32   // Number of open connections
@@ -69,6 +77,7 @@ func main() {
 		}
 
 		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
+		time.Sleep(time.Duration(*syncsec*2) * time.Second)
 		os.Exit(1)
 	}()
 
@@ -190,16 +199,82 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	io.Copy(bufbody, req.Body)
 	req.Body.Close()
 	req.Body = ioutil.NopCloser(bufbody)
+
 	store.Lock()
 	_, ok := store.Req[req.RequestURI]
 	if !ok {
 		store.Req[req.RequestURI] = make([]byte, 0)
 	} else {
-		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], ',')
+		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
 	}
 
 	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
 	store.Unlock()
 	//println("body:", string(bufbody.Bytes()))
 	return b[len(b):], []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
+}
+
+// backgroundManager runs continuously in the background and performs various
+// operations such as forward requests.
+func (store *Store) backgroundManager(interval int) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store.cancelSyncer = cancel
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+
+				//sender
+				send := func(key string, val *bytes.Buffer) (err error) {
+					//send
+					req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
+					if err != nil {
+						fmt.Printf("%s\n", err)
+						db := fmt.Sprintf("errors/%d", time.Now().Unix())
+						pudge.Set(db, key, val.Bytes())
+						pudge.Close(db)
+						return
+					}
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						fmt.Printf("%s\n", err)
+						db := fmt.Sprintf("errors/%d", time.Now().Unix())
+						pudge.Set(db, key, val.Bytes())
+						pudge.Close(db)
+						return
+					}
+					defer resp.Body.Close()
+					return
+				}
+
+				//keys reader
+				store.RLock()
+				keys := make([]string, 0)
+				for key := range store.Req {
+					keys = append(keys, key)
+				}
+				store.RUnlock()
+
+				//keys itterator
+				for _, key := range keys {
+					//read as fast as possible and return mutex
+					store.Lock()
+					val := new(bytes.Buffer)
+					_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
+					delete(store.Req, key)
+					if err != nil {
+						fmt.Printf("%s\n", err)
+						store.Unlock()
+						continue
+					}
+					store.Unlock()
+					//send 2 ch
+					go send(key, val)
+				}
+				time.Sleep(time.Duration(interval) * time.Second)
+			}
+		}
+	}()
 }
