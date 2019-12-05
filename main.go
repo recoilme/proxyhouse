@@ -207,7 +207,7 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
 		fmt.Printf("Wrong request:%+v\n", req)
 
-		return b[len(b):], nil, nil
+		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
 	}
 	bufbody := new(bytes.Buffer)
 	io.Copy(bufbody, req.Body)
