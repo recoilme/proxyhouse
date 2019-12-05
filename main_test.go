@@ -44,7 +44,7 @@ func Test_Base(t *testing.T) {
 	println("done")
 	store.RLock()
 	for req := range store.Req {
-		fmt.Printf("store: key:%s val:%s\n", req, store.Req[req])
+		fmt.Printf("store: uri:%s\nbody:%s\n", req, store.Req[req])
 	}
 	store.RUnlock()
 }
