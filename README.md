@@ -61,6 +61,12 @@ Every second - proxyhouse flush all gathered requests in clickhouse.
 ## Example (send 100 req parallel)
 
 ```
+
+Requests: 
+
+	req, err := http.NewRequest("POST", "http://127.0.0.1:8124/?query=INSERT%20INTO%20t%20VALUES", (%N))
+
+Result:
 go test -race
 proxyhouse started on port 8124 (loops: 4)
 Hello, test
