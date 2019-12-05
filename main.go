@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -19,21 +25,26 @@ import (
 var (
 	errClose  = errors.New("Error closed")
 	version   = "0.0.1"
-	port      = flag.Int("p", 11211, "TCP port number to listen on (default: 11211)")
-	slaveadr  = flag.String("slave", "", "Slave address, optional, example slave=127.0.0.1:11212")
+	port      = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs     = flag.String("unixs", "", "unix socket")
 	stdlib    = flag.Bool("stdlib", false, "use stdlib")
 	noudp     = flag.Bool("noudp", false, "disable udp interface")
 	loops     = flag.Int("loops", -1, "num loops")
 	balance   = flag.String("balance", "random", "balance - random, round-robin or least-connections")
 	keepalive = flag.Int("keepalive", 10, "keepalive connection, in seconds")
-	params    = flag.String("params", "", "params for b52 engines, url query format, all size in Mb, default: sizelru=100&sizettl=100&dbdir=db")
 )
 
 type conn struct {
 	is   evio.InputStream
 	addr string
 }
+
+type Store struct {
+	sync.RWMutex
+	Req map[string][]byte
+}
+
+var store = &Store{Req: make(map[string][]byte, 0)}
 
 func main() {
 	flag.Parse()
@@ -75,7 +86,7 @@ func main() {
 
 	events.NumLoops = *loops
 	events.Serving = func(srv evio.Server) (action evio.Action) {
-		fmt.Printf("b52 server started on port %d (loops: %d)\n", *port, srv.NumLoops)
+		fmt.Printf("proxyhouse started on port %d (loops: %d)\n", *port, srv.NumLoops)
 		return
 	}
 	events.Opened = func(ec evio.Conn) (out []byte, opts evio.Options, action evio.Action) {
@@ -110,7 +121,7 @@ func main() {
 			c = ec.Context().(*conn)
 			data = c.is.Begin(in)
 		}
-		responses := make([]byte, 0)
+		//responses := make([]byte, 0)
 		for {
 			leftover, response, err := proxy(data)
 			if err != nil {
@@ -126,12 +137,12 @@ func main() {
 			}
 			// handle the request
 			//println("handle the request", string(response))
-			responses = append(responses, response...)
-			//out = response
+			//responses = append(responses, response...)
+			out = response
 			data = leftover
 		}
 		//println("handle the responses", string(responses))
-		out = responses
+		//out = responses
 		if c != nil {
 			c.is.End(data)
 		}
@@ -157,5 +168,38 @@ func main() {
 }
 
 func proxy(b []byte) ([]byte, []byte, error) {
-	return nil, nil, nil
+	if len(b) == 0 {
+		return b, nil, nil
+	}
+
+	buf := bufio.NewReader(bytes.NewReader(b))
+	req, err := http.ReadRequest(buf)
+	if err != nil {
+		if err == io.EOF {
+			return b[len(b):], nil, nil
+			//println("EOF")
+			//	break
+		}
+		println(err.Error())
+
+		return b, nil, err
+	}
+	_ = req
+	//fmt.Printf("req:%+v\n", req)
+	bufbody := new(bytes.Buffer)
+	io.Copy(bufbody, req.Body)
+	req.Body.Close()
+	req.Body = ioutil.NopCloser(bufbody)
+	store.Lock()
+	_, ok := store.Req[req.RequestURI]
+	if !ok {
+		store.Req[req.RequestURI] = make([]byte, 0)
+	} else {
+		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], ',')
+	}
+
+	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
+	store.Unlock()
+	//println("body:", string(bufbody.Bytes()))
+	return b[len(b):], []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
