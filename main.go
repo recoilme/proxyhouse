@@ -201,12 +201,14 @@ func proxy(b []byte) ([]byte, []byte, error) {
 			//println("EOF")
 			//	break
 		}
-		println(err.Error())
-
+		fmt.Println(err.Error())
 		return b, nil, err
 	}
-	_ = req
-	//fmt.Printf("req:%+v\n", req)
+	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
+		fmt.Printf("Wrong request:%+v\n", req)
+
+		return b[len(b):], nil, nil
+	}
 	bufbody := new(bytes.Buffer)
 	io.Copy(bufbody, req.Body)
 	req.Body.Close()
