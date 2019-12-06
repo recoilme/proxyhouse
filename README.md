@@ -74,6 +74,17 @@ body:
 (75),(0),(50),(25),(76),(1),(77),(26),(51),(52),(2),(27),(28),(53),(78),(54),(29),(79),(55),(3),(80),(56),(30),(31),(4),(81),(57),(5),(32),(82),(58),(6),(83),(33),(59),(7),(84),(60),(85),(8),(34),(9),(61),(86),(35),(62),(10),(87),(11),(63),(88),(64),(12),(89),(36),(13),(65),(90),(37),(66),(91),(38),(67),(39),(92),(14),(40),(15),(93),(68),(41),(16),(69),(42),(94),(17),(70),(95),(43),(71),(18),(44),(96),(72),(19),(45),(20),(73),(97),(74),(46),(21),(98),(47),(22),(48),(23),(49),(24),(99)
 ```
 
+## Graphite
+
+Proxyhouse will send to Graphite this metrics:
+
+ - count.proxyhouse.error //Clickhouse error
+ - count.proxyhouse.error400 // wrong request
+ - count.proxyhouse.value // count sended values
+ - count.proxyhouse.send // count sended requests
+ - count.proxyhouse.receive // count recieved requests
+
+
 ## Contact
 
 Vadim Kulibaba [@recoilme](https://github.com/recoilme)

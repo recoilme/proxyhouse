@@ -23,23 +23,27 @@ import (
 
 	_ "expvar"
 
+	"github.com/marpaia/graphite-golang"
 	"github.com/recoilme/pudge"
 	"github.com/tidwall/evio"
 )
 
 var (
-	errClose  = errors.New("Error closed")
-	version   = "0.0.1"
-	port      = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
-	unixs     = flag.String("unixs", "", "unix socket")
-	stdlib    = flag.Bool("stdlib", false, "use stdlib")
-	noudp     = flag.Bool("noudp", false, "disable udp interface")
-	loops     = flag.Int("loops", -1, "num loops")
-	balance   = flag.String("balance", "random", "balance - random, round-robin or least-connections")
-	keepalive = flag.Int("keepalive", 10, "keepalive connection, in seconds")
-	fwd       = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
-	delim     = flag.String("delim", ",", "body delimiter")
-	syncsec   = flag.Int("syncsec", 2, "sync interval, in seconds")
+	errClose       = errors.New("Error closed")
+	version        = "0.0.1"
+	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
+	unixs          = flag.String("unixs", "", "unix socket")
+	stdlib         = flag.Bool("stdlib", false, "use stdlib")
+	noudp          = flag.Bool("noudp", false, "disable udp interface")
+	workers        = flag.Int("workers", -1, "num workers")
+	balance        = flag.String("balance", "random", "balance - random, round-robin or least-connections")
+	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
+	fwd            = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	delim          = flag.String("delim", ",", "body delimiter")
+	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
+	graphitehost   = flag.String("graphitehost", "", "graphite host")
+	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
+	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite graphiteprefix")
 )
 
 type conn struct {
@@ -56,6 +60,7 @@ type Store struct {
 var store = &Store{Req: make(map[string][]byte, 0)}
 var in uint32  //in requests
 var out uint32 //out requests
+var gr *graphite.Graphite
 
 func main() {
 	flag.Parse()
@@ -72,6 +77,16 @@ func main() {
 
 	checkErr()
 
+	if *graphitehost != "" {
+		g, err := graphite.NewGraphiteUDP(*graphitehost, *graphiteport)
+		if err != nil {
+			panic(err)
+		}
+		gr = g
+	} else {
+		gr = graphite.NewGraphiteNop(*graphitehost, *graphiteport)
+	}
+
 	// Wait for interrupt signal to gracefully shutdown the server with
 	// setup signal catching
 	quit := make(chan os.Signal, 1)
@@ -85,11 +100,11 @@ func main() {
 		if q == syscall.SIGPIPE || q.String() == "broken pipe" || q.String() == "window size changes" {
 			return
 		}
-
+		store.cancelSyncer()
 		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
 		fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
 
-		time.Sleep(time.Duration(*syncsec*2) * time.Second)
+		time.Sleep(time.Duration(*syncsec) * time.Second)
 		os.Exit(1)
 	}()
 
@@ -105,7 +120,7 @@ func main() {
 		events.LoadBalance = evio.LeastConnections
 	}
 
-	events.NumLoops = *loops
+	events.NumLoops = *workers
 	events.Serving = func(srv evio.Server) (action evio.Action) {
 		fmt.Printf("proxyhouse started on port %d (loops: %d)\n", *port, srv.NumLoops)
 		return
@@ -206,7 +221,7 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	}
 	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
 		fmt.Printf("Wrong request:%+v\n", req)
-
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
 		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
 	}
 	bufbody := new(bytes.Buffer)
@@ -224,7 +239,8 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
 	store.Unlock()
 	atomic.AddUint32(&in, 1)
-	return b[len(b):], []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
 
 // backgroundManager runs continuously in the background and performs various
@@ -236,6 +252,7 @@ func (store *Store) backgroundManager(interval int) {
 		for {
 			select {
 			case <-ctx.Done():
+				fmt.Println("backgroundManager - canceled")
 				return
 			default:
 				//keys reader
@@ -261,6 +278,7 @@ func (store *Store) backgroundManager(interval int) {
 					store.Unlock()
 					//send 2 ch
 					atomic.AddUint32(&out, 1)
+					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
 					go send(key, val, true)
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
@@ -273,7 +291,11 @@ func (store *Store) backgroundManager(interval int) {
 func send(key string, val *bytes.Buffer, silent bool) (err error) {
 	//send
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
+
+	slices := bytes.Split(val.Bytes(), []byte(*delim))
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.value", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
 	if err != nil {
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
 		fmt.Printf("%s\n", err)
 		if silent {
 			db := fmt.Sprintf("errors/%d", time.Now().Unix())
@@ -285,6 +307,7 @@ func send(key string, val *bytes.Buffer, silent bool) (err error) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Printf("%s\n", err)
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
 		if silent {
 			db := fmt.Sprintf("errors/%d", time.Now().Unix())
 			pudge.Set(db, key, val.Bytes())

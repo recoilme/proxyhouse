@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -13,6 +14,12 @@ import (
 
 	"github.com/tidwall/lotsa"
 )
+
+func Test_Slice(t *testing.T) {
+	delim := ","
+	slices := bytes.Split([]byte(",(7499),(9999)"), []byte(delim))
+	fmt.Println(len(slices))
+}
 
 //go test -timeout 50s github.com/recoilme/proxyhouse -run Test_Base
 func Test_Base(t *testing.T) {
@@ -32,7 +39,7 @@ func Test_Base(t *testing.T) {
 	lotsa.MemUsage = true
 
 	println("-- bulk --")
-	N := 100
+	N := 10
 	fmt.Printf("\n")
 	fmt.Printf("go version %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("\n")
