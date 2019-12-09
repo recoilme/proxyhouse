@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -225,11 +224,6 @@ func proxy(b []byte) ([]byte, []byte, error) {
 		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
 		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
 	}
-	bufbody := new(bytes.Buffer)
-	io.Copy(bufbody, req.Body)
-	req.Body.Close()
-	req.Body = ioutil.NopCloser(bufbody)
-
 	store.Lock()
 	_, ok := store.Req[req.RequestURI]
 	if !ok {
@@ -237,8 +231,15 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	} else {
 		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
 	}
-	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
+	//store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
+	io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
+	req.Body.Close()
+	//req.Body = ioutil.NopCloser(bufbody)
 	store.Unlock()
+
+	//bufbody := new(bytes.Buffer)
+	//io.Copy(bufbody, req.Body)
+
 	atomic.AddUint32(&in, 1)
 	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
 	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
