@@ -61,6 +61,7 @@ var store = &Store{Req: make(map[string][]byte, 0)}
 var in uint32  //in requests
 var out uint32 //out requests
 var gr *graphite.Graphite
+var buffersize = 1024 * 1024
 
 func main() {
 	flag.Parse()
@@ -232,7 +233,7 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	store.Lock()
 	_, ok := store.Req[req.RequestURI]
 	if !ok {
-		store.Req[req.RequestURI] = make([]byte, 0)
+		store.Req[req.RequestURI] = make([]byte, 0, buffersize)
 	} else {
 		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
 	}
