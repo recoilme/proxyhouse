@@ -29,7 +29,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.1"
+	version        = "0.0.2"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -42,8 +42,8 @@ var (
 	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
-	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite graphiteprefix")
-	isdebug        = flag.Bool("isdebug", false, "debug requsts")
+	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite prefix")
+	isdebug        = flag.Bool("isdebug", false, "debug requests")
 )
 
 type conn struct {

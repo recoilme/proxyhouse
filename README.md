@@ -93,6 +93,24 @@ In case of errors:
 - every 60 seconds - try to resend packets from errors folder -> on error - silently skip
 - on start, if errors folder not empty -> try resend packets from errors folder to clickhouse -> on error - panic (manualy delete errors folder)
 
+## Params
+
+```
+	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
+	unixs          = flag.String("unixs", "", "unix socket")
+	stdlib         = flag.Bool("stdlib", false, "use stdlib")
+	noudp          = flag.Bool("noudp", true, "disable udp interface")
+	workers        = flag.Int("workers", -1, "num workers")
+	balance        = flag.String("balance", "random", "balance - random, round-robin or least-connections")
+	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
+	fwd            = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	delim          = flag.String("delim", ",", "body delimiter")
+	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
+	graphitehost   = flag.String("graphitehost", "", "graphite host")
+	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
+	graphiteprefix = flag.String("graphiteprefix", "relap", " graphite prefix")
+	isdebug        = flag.Bool("isdebug", false, "debug requests")
+```
 
 ## Contact
 
