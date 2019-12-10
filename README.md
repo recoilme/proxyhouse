@@ -84,6 +84,15 @@ Proxyhouse will send to Graphite this metrics:
  - count.proxyhouse.send // count sended requests
  - count.proxyhouse.receive // count recieved requests
 
+## Failover
+
+In case of errors:
+
+- wrong request (not POST with INSERT)-> send to client and grafite error400
+- clickhouse is down -> Send to graphite error count (+1) -> write packets to errors dir (by interval)
+- every 60 seconds - try to resend packets from errors folder -> on error - silently skip
+- on start, if errors folder not empty -> try resend packets from errors folder to clickhouse -> on error - panic (manualy delete errors folder)
+
 
 ## Contact
 

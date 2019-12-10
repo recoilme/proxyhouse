@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ func Test_Slice(t *testing.T) {
 
 //go test -timeout 50s github.com/recoilme/proxyhouse -run Test_Base
 func Test_Base(t *testing.T) {
+	log.SetOutput(ioutil.Discard) //disable log message on test
 	go main()
 	time.Sleep(1 * time.Second)
 	addr := ":8124"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -32,7 +33,7 @@ var (
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
-	noudp          = flag.Bool("noudp", false, "disable udp interface")
+	noudp          = flag.Bool("noudp", true, "disable udp interface")
 	workers        = flag.Int("workers", -1, "num workers")
 	balance        = flag.String("balance", "random", "balance - random, round-robin or least-connections")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
@@ -42,6 +43,7 @@ var (
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
 	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite graphiteprefix")
+	isdebug        = flag.Bool("isdebug", false, "debug requsts")
 )
 
 type conn struct {
@@ -63,6 +65,8 @@ var buffersize = 1024 * 1024
 
 func main() {
 	flag.Parse()
+	//fix http client
+	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 100
 
 	store.backgroundManager(*syncsec)
 
@@ -74,8 +78,6 @@ func main() {
 	atomic.StoreUint32(&in, 0)
 	atomic.StoreUint32(&out, 0)
 
-	checkErr()
-
 	if *graphitehost != "" {
 		g, err := graphite.NewGraphiteUDP(*graphitehost, *graphiteport)
 		if err != nil {
@@ -84,6 +86,11 @@ func main() {
 		gr = g
 	} else {
 		gr = graphite.NewGraphiteNop(*graphitehost, *graphiteport)
+	}
+
+	letspanic := checkErr()
+	if letspanic != nil {
+		panic(letspanic)
 	}
 
 	// Wait for interrupt signal to gracefully shutdown the server with
@@ -142,6 +149,16 @@ func main() {
 		return
 	}
 
+	events.Tick = func() (delay time.Duration, action evio.Action) {
+		nopanic := checkErr()
+		if nopanic != nil {
+			fmt.Println("nopanic:", nopanic.Error())
+		}
+		delay = time.Second * 1
+
+		return
+	}
+
 	events.Data = func(ec evio.Conn, in []byte) (out []byte, action evio.Action) {
 		if in == nil {
 			fmt.Printf("wake from %s\n", ec.RemoteAddr())
@@ -158,7 +175,7 @@ func main() {
 		}
 		//responses := make([]byte, 0)
 		for {
-			leftover, response, err := proxy(data)
+			leftover, response, err := httpproto(data)
 			if err != nil {
 				if err != errClose {
 					// bad thing happened
@@ -202,46 +219,48 @@ func main() {
 	}
 }
 
-func proxy(b []byte) ([]byte, []byte, error) {
+func httpproto(b []byte) ([]byte, []byte, error) {
 	if len(b) == 0 {
 		return b, nil, nil
 	}
-	/*
-		buf := bufio.NewReader(bytes.NewReader(b))
-		req, err := http.ReadRequest(buf)
-		if err != nil {
-			if err == io.EOF {
-				return b[len(b):], nil, nil
-				//println("EOF")
-				//	break
-			}
-			fmt.Println(err.Error())
-			return b, nil, err
-		}
-		if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
-			fmt.Printf("Wrong request:%+v\n", req)
-			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
-			return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
-		}
-		store.Lock()
-		_, ok := store.Req[req.RequestURI]
-		if !ok {
-			store.Req[req.RequestURI] = make([]byte, 0, buffersize)
-		} else {
-			store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
-		}
-		//store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
-		io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
-		req.Body.Close()
-		//req.Body = ioutil.NopCloser(bufbody)
-		store.Unlock()
 
-		//bufbody := new(bytes.Buffer)
-		//io.Copy(bufbody, req.Body)
+	buf := bufio.NewReader(bytes.NewReader(b))
+	req, err := http.ReadRequest(buf)
+	if err != nil {
+		if err == io.EOF {
+			return b[len(b):], nil, nil
+			//println("EOF")
+			//	break
+		}
+		fmt.Println(err.Error())
+		return b, nil, err
+	}
+	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
+		fmt.Printf("Wrong request:%+v\n", req)
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
+		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
+	}
+	store.Lock()
+	_, ok := store.Req[req.RequestURI]
+	if !ok {
+		store.Req[req.RequestURI] = make([]byte, 0, buffersize)
+	} else {
+		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
+	}
+	bufbody := new(bytes.Buffer)
+	io.Copy(bufbody, req.Body)
+	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
+	//io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
+	req.Body.Close()
+	//req.Body = ioutil.NopCloser(bufbody)
+	store.Unlock()
 
-		atomic.AddUint32(&in, 1)
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
-	*/
+	//bufbody := new(bytes.Buffer)
+	//io.Copy(bufbody, req.Body)
+
+	atomic.AddUint32(&in, 1)
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+
 	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
 
@@ -291,6 +310,9 @@ func (store *Store) backgroundManager(interval int) {
 
 //sender
 func send(key string, val *bytes.Buffer, silent bool) (err error) {
+	if *isdebug {
+		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
+	}
 	//send
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
 
@@ -321,45 +343,43 @@ func send(key string, val *bytes.Buffer, silent bool) (err error) {
 	return
 }
 
-func checkErr() {
+func checkErr() (err error) {
 	list, err := filePathWalkDir("errors")
 	if err != nil {
 		if err.Error() != "lstat errors: no such file or directory" {
-			panic(err)
-		} else {
-			//no errors
-			return
+			return err
 		}
+		//send empty err if no errors
+		return nil
 	}
 	sort.Sort(sort.StringSlice(list))
 	for _, file := range list {
-		//println(file)
 		db, err := pudge.Open("errors/"+file, nil)
-
 		if err != nil {
-			panic(err)
+			return err
 		}
 		keys, err := db.Keys(nil, 0, 0, true)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		for _, key := range keys {
 			//println(key)
 			var val []byte
 			err := db.Get(key, &val)
 			if err != nil {
-				panic(err)
+				return err
 			}
 			buf := new(bytes.Buffer)
 			io.Copy(buf, bytes.NewReader(val))
 			err = send(string(key), buf, false)
 
 			if err != nil {
-				panic(err)
+				return err
 			}
 		}
 		db.DeleteFile()
 	}
+	return
 }
 
 func filePathWalkDir(root string) ([]string, error) {
