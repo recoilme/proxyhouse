@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -207,41 +206,42 @@ func proxy(b []byte) ([]byte, []byte, error) {
 	if len(b) == 0 {
 		return b, nil, nil
 	}
-
-	buf := bufio.NewReader(bytes.NewReader(b))
-	req, err := http.ReadRequest(buf)
-	if err != nil {
-		if err == io.EOF {
-			return b[len(b):], nil, nil
-			//println("EOF")
-			//	break
+	/*
+		buf := bufio.NewReader(bytes.NewReader(b))
+		req, err := http.ReadRequest(buf)
+		if err != nil {
+			if err == io.EOF {
+				return b[len(b):], nil, nil
+				//println("EOF")
+				//	break
+			}
+			fmt.Println(err.Error())
+			return b, nil, err
 		}
-		fmt.Println(err.Error())
-		return b, nil, err
-	}
-	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
-		fmt.Printf("Wrong request:%+v\n", req)
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
-		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
-	}
-	store.Lock()
-	_, ok := store.Req[req.RequestURI]
-	if !ok {
-		store.Req[req.RequestURI] = make([]byte, 0, buffersize)
-	} else {
-		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
-	}
-	//store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
-	io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
-	req.Body.Close()
-	//req.Body = ioutil.NopCloser(bufbody)
-	store.Unlock()
+		if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
+			fmt.Printf("Wrong request:%+v\n", req)
+			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
+			return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
+		}
+		store.Lock()
+		_, ok := store.Req[req.RequestURI]
+		if !ok {
+			store.Req[req.RequestURI] = make([]byte, 0, buffersize)
+		} else {
+			store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
+		}
+		//store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
+		io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
+		req.Body.Close()
+		//req.Body = ioutil.NopCloser(bufbody)
+		store.Unlock()
 
-	//bufbody := new(bytes.Buffer)
-	//io.Copy(bufbody, req.Body)
+		//bufbody := new(bytes.Buffer)
+		//io.Copy(bufbody, req.Body)
 
-	atomic.AddUint32(&in, 1)
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+		atomic.AddUint32(&in, 1)
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+	*/
 	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
 
