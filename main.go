@@ -29,7 +29,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.2"
+	version        = "0.0.3"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -44,6 +44,7 @@ var (
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
 	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite prefix")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
+	resendsec      = flag.Int("resendsec", 60, "resend error interval, in seconds")
 )
 
 type conn struct {
@@ -154,7 +155,7 @@ func main() {
 		if nopanic != nil {
 			fmt.Println("nopanic:", nopanic.Error())
 		}
-		delay = time.Second * 1
+		delay = time.Second * time.Duration(*resendsec)
 
 		return
 	}
