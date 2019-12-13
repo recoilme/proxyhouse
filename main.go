@@ -29,7 +29,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.3"
+	version        = "0.0.5"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -236,8 +236,8 @@ func httpproto(b []byte) ([]byte, []byte, error) {
 		fmt.Println(err.Error())
 		return b, nil, err
 	}
-	if req.Method != "POST" || !strings.HasPrefix(req.RequestURI, "/?query=INSERT") {
-		fmt.Printf("Wrong request:%+v\n", req)
+	if req.Method != "POST" {
+		fmt.Printf("Wrong request (not POST):%+v\n", req)
 		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
 		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
 	}
@@ -301,7 +301,7 @@ func (store *Store) backgroundManager(interval int) {
 					//send 2 ch
 					atomic.AddUint32(&out, 1)
 					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
-					go send(key, val, true)
+					go send(key, val.Bytes(), true)
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
 			}
@@ -310,32 +310,39 @@ func (store *Store) backgroundManager(interval int) {
 }
 
 //sender
-func send(key string, val *bytes.Buffer, silent bool) (err error) {
+func send(key string, val []byte, silent bool) (err error) {
 	if *isdebug {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
 	//send
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), val)
+	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), bytes.NewBuffer(val))
 
-	slices := bytes.Split(val.Bytes(), []byte(*delim))
+	slices := bytes.Split(val, []byte(*delim))
 	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.value", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
 		fmt.Printf("%s\n", err)
-		if silent {
-			db := fmt.Sprintf("errors/%d", time.Now().Unix())
-			pudge.Set(db, key, val.Bytes())
+		if silent && len(val) > 0 {
+			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
+			pudge.Set(db, key, val)
 			pudge.Close(db)
 		}
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
+	if err == nil && resp.StatusCode != 200 {
+		err = errors.New("Error: response code not 200")
+	}
 	if err != nil {
 		fmt.Printf("%s\n", err)
 		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
-		if silent {
-			db := fmt.Sprintf("errors/%d", time.Now().Unix())
-			pudge.Set(db, key, val.Bytes())
+		if resp != nil && *isdebug {
+			fmt.Printf("resp:%+v\n", resp)
+		}
+		if silent && len(val) > 0 {
+
+			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
+			pudge.Set(db, key, val)
 			pudge.Close(db)
 		}
 		return
@@ -370,9 +377,9 @@ func checkErr() (err error) {
 			if err != nil {
 				return err
 			}
-			buf := new(bytes.Buffer)
-			io.Copy(buf, bytes.NewReader(val))
-			err = send(string(key), buf, false)
+			//buf := new(bytes.Buffer)
+			//io.Copy(buf, bytes.NewReader(val))
+			err = send(string(key), val, false)
 
 			if err != nil {
 				return err
