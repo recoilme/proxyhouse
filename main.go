@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.5"
+	version        = "0.0.8"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -38,6 +36,7 @@ var (
 	balance        = flag.String("balance", "random", "balance - random, round-robin or least-connections")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	fwd            = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	repl           = flag.String("repl", "http://localhost:8124", "replace this string on forward")
 	delim          = flag.String("delim", ",", "body delimiter")
 	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
@@ -45,6 +44,8 @@ var (
 	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite prefix")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
 	resendsec      = flag.Int("resendsec", 60, "resend error interval, in seconds")
+
+	err400 = []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n")
 )
 
 type conn struct {
@@ -176,8 +177,13 @@ func main() {
 		}
 		//responses := make([]byte, 0)
 		for {
-			leftover, response, err := httpproto(data)
+			leftover, request := httpproto(data)
+			response, err := parsereq(request)
 			if err != nil {
+				if bytes.Equal(err400, response) {
+					out = response
+					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
+				}
 				if err != errClose {
 					// bad thing happened
 					fmt.Println(err.Error())
@@ -202,6 +208,7 @@ func main() {
 
 		return
 	}
+
 	var ssuf string
 	if *stdlib {
 		ssuf = "-net"
@@ -220,6 +227,39 @@ func main() {
 	}
 }
 
+func parsereq(b []byte) ([]byte, error) {
+
+	if i := bytes.Index(b, crlf); i >= 0 {
+		method, uri, _, err := scanRequestLine(b[:i+len(crlf)])
+		_ = version
+		if err != nil {
+			return err400, err
+		}
+		if method != "POST" {
+			return err400, errors.New("Only POST supported")
+		}
+		if j := bytes.Index(b, crlfcrlf); j >= 0 {
+			body := b[j+len(crlfcrlf):]
+			if len(body) > 0 {
+				store.Lock()
+				_, ok := store.Req[uri]
+				if !ok {
+					store.Req[uri] = make([]byte, 0, buffersize)
+				} else {
+					store.Req[uri] = append(store.Req[uri], []byte(*delim)...)
+				}
+				store.Req[uri] = append(store.Req[uri], body...)
+
+				store.Unlock()
+				atomic.AddUint32(&in, 1)
+				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+			}
+		}
+	}
+	return []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
+}
+
+/*
 func httpproto(b []byte) ([]byte, []byte, error) {
 	if len(b) == 0 {
 		return b, nil, nil
@@ -239,9 +279,11 @@ func httpproto(b []byte) ([]byte, []byte, error) {
 	if req.Method != "POST" {
 		fmt.Printf("Wrong request (not POST):%+v\n", req)
 		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
+		//Date:date := time.Now().Format(time.RFC1123)
 		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
 	}
 	store.Lock()
+
 	_, ok := store.Req[req.RequestURI]
 	if !ok {
 		store.Req[req.RequestURI] = make([]byte, 0, buffersize)
@@ -263,7 +305,7 @@ func httpproto(b []byte) ([]byte, []byte, error) {
 	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
 
 	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
-}
+}*/
 
 // backgroundManager runs continuously in the background and performs various
 // operations such as forward requests.
@@ -289,19 +331,16 @@ func (store *Store) backgroundManager(interval int) {
 				for _, key := range keys {
 					//read as fast as possible and return mutex
 					store.Lock()
-					val := new(bytes.Buffer)
-					_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
+					val := store.Req[key]
+					//val := new(bytes.Buffer)
+					//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
+					go send(key, val, true)
 					delete(store.Req, key)
-					if err != nil {
-						fmt.Printf("%s\n", err)
-						store.Unlock()
-						continue
-					}
 					store.Unlock()
 					//send 2 ch
 					atomic.AddUint32(&out, 1)
 					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
-					go send(key, val.Bytes(), true)
+
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
 			}
@@ -315,7 +354,14 @@ func send(key string, val []byte, silent bool) (err error) {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
 	//send
-	req, err := http.NewRequest("POST", fmt.Sprintf("%s%s", *fwd, key), bytes.NewBuffer(val))
+	//http://ch2.surfy.ru:8124/
+	uri := key
+	if strings.HasPrefix(uri, "/") {
+		uri = *fwd + uri
+	} else {
+		uri = strings.Replace(uri, *repl, *fwd, 1)
+	}
+	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
 	slices := bytes.Split(val, []byte(*delim))
 	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.value", *graphiteprefix), fmt.Sprintf("%d", len(slices)))

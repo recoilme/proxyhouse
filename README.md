@@ -38,23 +38,23 @@ or just ./proxyhouse - for start with default params
 You send post request:
 
 
-```$ echo '(1),(2),(3)' | curl 'http://localhost:8123/?query=INSERT%20INTO%20t%20FORMAT%20Values' --data-binary @-```
+```$ echo '(1),(2),(3)' | curl 'http://localhost:8124/?query=INSERT%20INTO%20t%20FORMAT%20Values' --data-binary @-```
 
 
 proxyhouse create map:
 
-`requests['http://localhost:8123/?query=INSERT%20INTO%20t%20FORMAT%20Values']= '(1),(2),(3)'`
+`requests['/?query=INSERT%20INTO%20t%20FORMAT%20Values']= '(1),(2),(3)'`
 
 
 You send next request:
 
-```$ echo '(4),(5),(6)' | curl 'http://localhost:8123/?query=INSERT%20INTO%20t%20FORMAT%20Values' --data-binary @-```
+```$ echo '(4),(5),(6)' | curl 'http://localhost:8124/?query=INSERT%20INTO%20t%20FORMAT%20Values' --data-binary @-```
 
 
 proxyhouse add `,` and body value too map:
 
 
-`requests['http://localhost:8123/?query=INSERT%20INTO%20t%20FORMAT%20Values']= '(1),(2),(3),(4),(5),(6)'`
+`requests['/?query=INSERT%20INTO%20t%20FORMAT%20Values']= '(1),(2),(3),(4),(5),(6)'`
 
 Every second - proxyhouse flush all gathered requests in clickhouse.
 

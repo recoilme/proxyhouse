@@ -41,7 +41,7 @@ func Test_Base(t *testing.T) {
 	lotsa.MemUsage = true
 
 	println("-- bulk --")
-	N := 10
+	N := 10000
 	fmt.Printf("\n")
 	fmt.Printf("go version %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("\n")
