@@ -27,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.8"
+	version        = "0.0.9"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -70,7 +70,7 @@ func main() {
 	//fix http client
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 100
 
-	store.backgroundManager(*syncsec)
+	//store.backgroundManager(*syncsec)
 
 	var totalConnections uint32 // Total number of connections opened since the server started running
 	var currConnections int32   // Number of open connections
@@ -108,7 +108,7 @@ func main() {
 		if q == syscall.SIGPIPE || q.String() == "broken pipe" || q.String() == "window size changes" {
 			return
 		}
-		store.cancelSyncer()
+		//store.cancelSyncer()
 		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
 		fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
 
@@ -157,6 +157,37 @@ func main() {
 			fmt.Println("nopanic:", nopanic.Error())
 		}
 		delay = time.Second * time.Duration(*resendsec)
+
+		return
+	}
+
+	events.Tick = func() (delay time.Duration, action evio.Action) {
+
+		//keys reader
+		store.RLock()
+		keys := make([]string, 0)
+		for key := range store.Req {
+			keys = append(keys, key)
+		}
+		store.RUnlock()
+
+		//keys itterator
+		for _, key := range keys {
+			//read as fast as possible and return mutex
+			store.Lock()
+			val := store.Req[key]
+			//val := new(bytes.Buffer)
+			//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
+			go send(key, val, true)
+			delete(store.Req, key)
+			store.Unlock()
+			//send 2 ch
+			atomic.AddUint32(&out, 1)
+			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
+
+		}
+		//time.Sleep(time.Duration(interval) * time.Second)
+		delay = time.Second * time.Duration(*syncsec)
 
 		return
 	}
