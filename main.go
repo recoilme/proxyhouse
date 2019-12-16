@@ -183,7 +183,7 @@ func main() {
 			store.Unlock()
 			//send 2 ch
 			atomic.AddUint32(&out, 1)
-			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
+			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_sent", *graphiteprefix), "1")
 
 		}
 		//time.Sleep(time.Duration(interval) * time.Second)
@@ -213,7 +213,7 @@ func main() {
 			if err != nil {
 				if bytes.Equal(err400, response) {
 					out = response
-					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
+					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.wrong_requests", *graphiteprefix), "1")
 				}
 				if err != errClose {
 					// bad thing happened
@@ -283,7 +283,9 @@ func parsereq(b []byte) ([]byte, error) {
 
 				store.Unlock()
 				atomic.AddUint32(&in, 1)
-				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
+				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_received", *graphiteprefix), "1")
+				table := extractTable(uri)
+				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.requests_received", *graphiteprefix, table), "1")
 			}
 		}
 	}
@@ -370,7 +372,6 @@ func (store *Store) backgroundManager(interval int) {
 					store.Unlock()
 					//send 2 ch
 					atomic.AddUint32(&out, 1)
-					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.send", *graphiteprefix), "1")
 
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
@@ -379,13 +380,29 @@ func (store *Store) backgroundManager(interval int) {
 	}()
 }
 
+func extractTable(key string) string {
+	table := "unknown"
+	lowkey := strings.ToLower(key)
+	if strings.Contains(lowkey, "insert%20into%20") {
+		from := strings.Index(lowkey, "insert%20into%20")
+		if from >= 0 {
+			from += len("insert%20into%20")
+			to := strings.Index(lowkey[from:], "%20")
+			if to > 0 {
+				table = lowkey[from:to]
+			}
+		}
+	}
+	return table
+}
+
 //sender
 func send(key string, val []byte, silent bool) (err error) {
 	if *isdebug {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
 	//send
-	//http://ch2.surfy.ru:8124/
+	table := extractTable(key)
 	uri := key
 	if strings.HasPrefix(uri, "/") {
 		uri = *fwd + uri
@@ -395,9 +412,13 @@ func send(key string, val []byte, silent bool) (err error) {
 	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
 	slices := bytes.Split(val, []byte(*delim))
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.value", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_sent", *graphiteprefix), "1")
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.requests_sent", *graphiteprefix, table), "1")
+
 	if err != nil {
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.ch_errors", *graphiteprefix), "1")
 		fmt.Printf("%s\n", err)
 		if silent && len(val) > 0 {
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
@@ -412,7 +433,7 @@ func send(key string, val []byte, silent bool) (err error) {
 	}
 	if err != nil {
 		fmt.Printf("%s\n", err)
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.ch_errors", *graphiteprefix), "1")
 		if resp != nil && *isdebug {
 			fmt.Printf("resp:%+v\n", resp)
 		}
