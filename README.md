@@ -114,6 +114,17 @@ In case of errors:
 	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 ```
 
+## Benchmark
+
+```
+go version go1.13.4 linux/amd64
+
+     number of cpus: 32
+     number of inserts: 100000
+	 
+100,000 ops over 32 threads in 2162ms, 46,254/sec, 21619 ns/op, 1.8 MB, 19 bytes/op
+
+```
 ## Contact
 
 Vadim Kulibaba [@recoilme](https://github.com/recoilme)

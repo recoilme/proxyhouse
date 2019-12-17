@@ -69,7 +69,7 @@ var buffersize = 1024 * 8
 func main() {
 	flag.Parse()
 	//fix http client
-	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 100
+	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 1000
 
 	store.backgroundManager(*syncsec)
 
