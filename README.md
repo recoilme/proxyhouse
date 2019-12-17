@@ -88,9 +88,9 @@ Proxyhouse will send to Graphite this metrics:
 
 In case of errors:
 
-- wrong request (not POST with INSERT)-> send to client and grafite error400
-- clickhouse is down -> Send to graphite error count (+1) -> write packets to errors dir (by interval)
-- every 60 seconds - try to resend packets from errors folder -> on error - silently skip
+- wrong request (not POST with INSERT)-> send to 400 to client and grafite wrong_requests
+- clickhouse is down -> Send to graphite ch_errors count (+1) -> write packets to errors dir (by interval)
+- every 60 steps - try to resend packets from errors folder -> on error - silently skip
 - on start, if errors folder not empty -> try resend packets from errors folder to clickhouse -> on error - panic (manualy delete errors folder)
 
 ## Params
@@ -117,14 +117,14 @@ In case of errors:
 ## Benchmark
 
 ```
-go version go1.13.4 linux/amd64
+go version go1.13.5 darwin/amd64
 
-     number of cpus: 32
-     number of inserts: 100000
-	 
-100,000 ops over 32 threads in 2162ms, 46,254/sec, 21619 ns/op, 1.8 MB, 19 bytes/op
+     number of cpus: 8
+     number of inserts: 10000
+10,000 ops over 8 threads in 140ms, 71,241/sec, 14036 ns/op, 2.1 MB, 216 bytes/op
 
 ```
+
 ## Contact
 
 Vadim Kulibaba [@recoilme](https://github.com/recoilme)
