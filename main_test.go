@@ -53,7 +53,8 @@ func Test_Base(t *testing.T) {
 	println("done")
 	store.RLock()
 	for req := range store.Req {
-		fmt.Printf("store:\n\nuri:%s\nbody:%s\n", req, store.Req[req])
+		slices := bytes.Split(store.Req[req], []byte(","))
+		fmt.Printf("store:\n\nuri:%s\nbody:%d\n", req, len(slices))
 	}
 	store.RUnlock()
 	time.Sleep(time.Duration(2) * time.Second)

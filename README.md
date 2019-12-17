@@ -1,6 +1,6 @@
 
 
-`proxyhouse` WIP!
+`proxyhouse`
 
 [![GoDoc](https://img.shields.io/badge/api-reference-blue.svg?style=flat-square)](https://godoc.org/github.com/recoilme/proxyhouse)
 
@@ -15,7 +15,7 @@ To start using `proxyhouse`, install Go and run `go get`:
 
 ```sh
 $ go get -u github.com/recoilme/proxyhouse
-$ go build or go install
+$ GOOS=linux go build
 ```
 
 This will retrieve and build the server. Or grab compiled binary version.
@@ -78,11 +78,11 @@ body:
 
 Proxyhouse will send to Graphite this metrics:
 
- - count.proxyhouse.error //Clickhouse error
- - count.proxyhouse.error400 // wrong request
- - count.proxyhouse.value // count sended values
- - count.proxyhouse.send // count sended requests
- - count.proxyhouse.receive // count recieved requests
+ - count.proxyhouse.ch_errors //Clickhouse error
+ - count.proxyhouse.wrong_requests // wrong request
+ - count.proxyhouse.rows_sent // count sended values
+ - count.proxyhouse.requests_sent // count sended requests
+ - count.proxyhouse.requests_received // count recieved requests
 
 ## Failover
 
@@ -104,12 +104,14 @@ In case of errors:
 	balance        = flag.String("balance", "random", "balance - random, round-robin or least-connections")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	fwd            = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	repl           = flag.String("repl", "http://localhost:8124", "replace this string on forward")
 	delim          = flag.String("delim", ",", "body delimiter")
 	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
-	graphiteprefix = flag.String("graphiteprefix", "relap", " graphite prefix")
+	graphiteprefix = flag.String("graphiteprefix", "relap.count.proxyhouse", "graphite prefix")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
+	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 ```
 
 ## Contact

@@ -27,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.0.9"
+	version        = "0.1.0"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -41,9 +41,9 @@ var (
 	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
-	graphiteprefix = flag.String("graphiteprefix", "relap", "graphite prefix")
+	graphiteprefix = flag.String("graphiteprefix", "relap.count.proxyhouse", "graphite prefix")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
-	resendsec      = flag.Int("resendsec", 60, "resend error interval, in seconds")
+	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 
 	err400 = []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n")
 )
@@ -60,17 +60,18 @@ type Store struct {
 }
 
 var store = &Store{Req: make(map[string][]byte, 0)}
-var in uint32  //in requests
-var out uint32 //out requests
+var in uint32          //in requests
+var out uint32         //out requests
+var errorsCheck uint32 // Number of errors Check
 var gr *graphite.Graphite
-var buffersize = 1024 * 1024
+var buffersize = 1024 * 8
 
 func main() {
 	flag.Parse()
 	//fix http client
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 100
 
-	//store.backgroundManager(*syncsec)
+	store.backgroundManager(*syncsec)
 
 	var totalConnections uint32 // Total number of connections opened since the server started running
 	var currConnections int32   // Number of open connections
@@ -79,6 +80,7 @@ func main() {
 	atomic.StoreInt32(&currConnections, 0)
 	atomic.StoreUint32(&in, 0)
 	atomic.StoreUint32(&out, 0)
+	atomic.StoreUint32(&errorsCheck, 0)
 
 	if *graphitehost != "" {
 		g, err := graphite.NewGraphiteUDP(*graphitehost, *graphiteport)
@@ -108,7 +110,7 @@ func main() {
 		if q == syscall.SIGPIPE || q.String() == "broken pipe" || q.String() == "window size changes" {
 			return
 		}
-		//store.cancelSyncer()
+		store.cancelSyncer()
 		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
 		fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
 
@@ -145,50 +147,10 @@ func main() {
 		ec.SetContext(&conn{})
 		return
 	}
+
 	events.Closed = func(ec evio.Conn, err error) (action evio.Action) {
 		//fmt.Printf("closed: %v\n", ec.RemoteAddr())
 		atomic.AddInt32(&currConnections, -1)
-		return
-	}
-
-	events.Tick = func() (delay time.Duration, action evio.Action) {
-		nopanic := checkErr()
-		if nopanic != nil {
-			fmt.Println("nopanic:", nopanic.Error())
-		}
-		delay = time.Second * time.Duration(*resendsec)
-
-		return
-	}
-
-	events.Tick = func() (delay time.Duration, action evio.Action) {
-
-		//keys reader
-		store.RLock()
-		keys := make([]string, 0)
-		for key := range store.Req {
-			keys = append(keys, key)
-		}
-		store.RUnlock()
-
-		//keys itterator
-		for _, key := range keys {
-			//read as fast as possible and return mutex
-			store.Lock()
-			val := store.Req[key]
-			//val := new(bytes.Buffer)
-			//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
-			go send(key, val, true)
-			delete(store.Req, key)
-			store.Unlock()
-			//send 2 ch
-			atomic.AddUint32(&out, 1)
-			gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_sent", *graphiteprefix), "1")
-
-		}
-		//time.Sleep(time.Duration(interval) * time.Second)
-		delay = time.Second * time.Duration(*syncsec)
-
 		return
 	}
 
@@ -213,7 +175,7 @@ func main() {
 			if err != nil {
 				if bytes.Equal(err400, response) {
 					out = response
-					gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.wrong_requests", *graphiteprefix), "1")
+					gr.SimpleSend(fmt.Sprintf("%s.wrong_requests", *graphiteprefix), "1")
 				}
 				if err != errClose {
 					// bad thing happened
@@ -283,62 +245,14 @@ func parsereq(b []byte) ([]byte, error) {
 
 				store.Unlock()
 				atomic.AddUint32(&in, 1)
-				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_received", *graphiteprefix), "1")
+				gr.SimpleSend(fmt.Sprintf("%s.requests_received", *graphiteprefix), "1")
 				table := extractTable(uri)
-				gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.requests_received", *graphiteprefix, table), "1")
+				gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
 			}
 		}
 	}
 	return []byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), nil
 }
-
-/*
-func httpproto(b []byte) ([]byte, []byte, error) {
-	if len(b) == 0 {
-		return b, nil, nil
-	}
-
-	buf := bufio.NewReader(bytes.NewReader(b))
-	req, err := http.ReadRequest(buf)
-	if err != nil {
-		if err == io.EOF {
-			return b[len(b):], nil, nil
-			//println("EOF")
-			//	break
-		}
-		fmt.Println(err.Error())
-		return b, nil, err
-	}
-	if req.Method != "POST" {
-		fmt.Printf("Wrong request (not POST):%+v\n", req)
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.error400", *graphiteprefix), "1")
-		//Date:date := time.Now().Format(time.RFC1123)
-		return b[len(b):], []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n"), nil
-	}
-	store.Lock()
-
-	_, ok := store.Req[req.RequestURI]
-	if !ok {
-		store.Req[req.RequestURI] = make([]byte, 0, buffersize)
-	} else {
-		store.Req[req.RequestURI] = append(store.Req[req.RequestURI], []byte(*delim)...)
-	}
-	bufbody := new(bytes.Buffer)
-	io.Copy(bufbody, req.Body)
-	store.Req[req.RequestURI] = append(store.Req[req.RequestURI], bufbody.Bytes()...)
-	//io.Copy(bytes.NewBuffer(store.Req[req.RequestURI]), req.Body)
-	req.Body.Close()
-	//req.Body = ioutil.NopCloser(bufbody)
-	store.Unlock()
-
-	//bufbody := new(bytes.Buffer)
-	//io.Copy(bufbody, req.Body)
-
-	atomic.AddUint32(&in, 1)
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.receive", *graphiteprefix), "1")
-
-	return b[len(b):], []byte("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"), nil
-}*/
 
 // backgroundManager runs continuously in the background and performs various
 // operations such as forward requests.
@@ -352,6 +266,14 @@ func (store *Store) backgroundManager(interval int) {
 				fmt.Println("backgroundManager - canceled")
 				return
 			default:
+				atomic.AddUint32(&errorsCheck, 1)
+				currCheck := atomic.LoadUint32(&errorsCheck)
+				if currCheck%uint32(*resendint) == 0 {
+					nopanic := checkErr()
+					if nopanic != nil {
+						fmt.Println("nopanic:", nopanic.Error())
+					}
+				}
 				//keys reader
 				store.RLock()
 				keys := make([]string, 0)
@@ -389,7 +311,7 @@ func extractTable(key string) string {
 			from += len("insert%20into%20")
 			to := strings.Index(lowkey[from:], "%20")
 			if to > 0 {
-				table = lowkey[from:to]
+				table = lowkey[from:(to + from)]
 			}
 		}
 	}
@@ -412,13 +334,13 @@ func send(key string, val []byte, silent bool) (err error) {
 	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
 	slices := bytes.Split(val, []byte(*delim))
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.requests_sent", *graphiteprefix), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
-	gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.bytable.%s.requests_sent", *graphiteprefix, table), "1")
+	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.requests_sent", *graphiteprefix), "1")
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
 
 	if err != nil {
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.ch_errors", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		fmt.Printf("%s\n", err)
 		if silent && len(val) > 0 {
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
@@ -433,7 +355,7 @@ func send(key string, val []byte, silent bool) (err error) {
 	}
 	if err != nil {
 		fmt.Printf("%s\n", err)
-		gr.SimpleSend(fmt.Sprintf("%s.count.proxyhouse.ch_errors", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		if resp != nil && *isdebug {
 			fmt.Printf("resp:%+v\n", resp)
 		}
