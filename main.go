@@ -27,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.0"
+	version        = "0.1.1"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -312,6 +312,18 @@ func extractTable(key string) string {
 			to := strings.Index(lowkey[from:], "%20")
 			if to > 0 {
 				table = lowkey[from:(to + from)]
+			}
+		}
+	}
+	if table == "unknown" {
+		if strings.Contains(lowkey, "insert+into+") {
+			from := strings.Index(lowkey, "insert+into+")
+			if from >= 0 {
+				from += len("insert+into+")
+				to := strings.Index(lowkey[from:], "+")
+				if to > 0 {
+					table = lowkey[from:(to + from)]
+				}
 			}
 		}
 	}
