@@ -27,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.2"
+	version        = "0.1.3"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -46,7 +46,7 @@ var (
 	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 
 	err400 = []byte("HTTP/1.1 400 OK\r\nContent-Length: 0\r\n\r\n")
-	status = "OK"
+	status = "OK\r\n"
 )
 
 type conn struct {
@@ -233,7 +233,7 @@ func parsereq(b []byte) ([]byte, error) {
 			if method == "GET" && uri == "/status" {
 				resp := fmt.Sprintf("status:%s", status)
 				reply := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(resp), resp)
-				status = "OK"
+				status = "OK\r\n"
 				return []byte(reply), nil
 			}
 			return err400, errors.New("Only POST supported")
@@ -374,7 +374,7 @@ func send(key string, val []byte, silent bool) (err error) {
 	}
 	if err != nil {
 		fmt.Printf("%s\n", err)
-		status = err.Error()
+		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		if resp != nil && *isdebug {
 			fmt.Printf("resp:%+v\n", resp)
