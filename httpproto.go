@@ -48,14 +48,12 @@ func httpproto(b []byte) ([]byte, []byte) {
 				}
 			}
 		}
-		if cntlen > 0 {
-			//println("l1", len(b), "l2", (i + len(crlfcrlf) + cntlen))
-			//fmt.Printf("%+v''\n", (string(b[i+len(crlfcrlf):])))
-			if len(b) < (i + len(crlfcrlf) + cntlen) {
-				return b, nil
-			}
-			return b[(i + len(crlfcrlf) + cntlen):], b[:(i + len(crlfcrlf) + cntlen)]
+		//println("l1", len(b), "l2", (i + len(crlfcrlf) + cntlen))
+		//fmt.Printf("%+v''\n", (string(b[i+len(crlfcrlf):])))
+		if len(b) < (i + len(crlfcrlf) + cntlen) {
+			return b, nil
 		}
+		return b[(i + len(crlfcrlf) + cntlen):], b[:(i + len(crlfcrlf) + cntlen)]
 
 	}
 	return b, nil
