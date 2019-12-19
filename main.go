@@ -27,7 +27,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.3"
+	version        = "0.1.5"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
@@ -182,6 +182,9 @@ func main() {
 					// bad thing happened
 					fmt.Println(err.Error())
 				}
+				if err.Error() == "Close" {
+					out = response //костыль для нагиос, простите
+				}
 				action = evio.Close
 				break
 			} else if len(leftover) == len(data) {
@@ -232,9 +235,11 @@ func parsereq(b []byte) ([]byte, error) {
 		if method != "POST" {
 			if method == "GET" && uri == "/status" {
 				resp := fmt.Sprintf("status:%s", status)
-				reply := fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(resp), resp)
+
+				date := time.Now().UTC().Format(http.TimeFormat)
+				reply := fmt.Sprintf("HTTP/1.1 200 Ok\r\nDate: %s\r\nServer: proxyhouse %s\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: Closed\r\n\r\n%s", date, version, len(resp), resp)
 				status = "OK\r\n"
-				return []byte(reply), nil
+				return []byte(reply), errors.New("Close")
 			}
 			return err400, errors.New("Only POST supported")
 		}
