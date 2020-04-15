@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -241,6 +242,7 @@ func parsereq(b []byte) ([]byte, error) {
 				status = "OK\r\n"
 				return []byte(reply), errors.New("Close")
 			}
+			fmt.Println("Error, not post uri request:", string(b[:i+len(crlf)]))
 			return err400, errors.New("Only POST supported")
 		}
 		if j := bytes.Index(b, crlfcrlf); j >= 0 {
@@ -301,7 +303,7 @@ func (store *Store) backgroundManager(interval int) {
 					val := store.Req[key]
 					//val := new(bytes.Buffer)
 					//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
-					go send(key, val, true)
+					send(key, val, true)
 					delete(store.Req, key)
 					store.Unlock()
 					//send 2 ch
@@ -381,8 +383,9 @@ func send(key string, val []byte, silent bool) (err error) {
 		fmt.Printf("%s\n", err)
 		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
-		if resp != nil && *isdebug {
-			fmt.Printf("resp:%+v\n", resp)
+		if resp != nil {
+			bodyResp, _ := ioutil.ReadAll(resp.Body)
+			fmt.Printf("Response: status: %d body:%s \n", resp.StatusCode, bodyResp)
 		}
 		if silent && len(val) > 0 {
 
@@ -408,6 +411,7 @@ func checkErr() (err error) {
 	sort.Sort(sort.StringSlice(list))
 	for _, file := range list {
 		db, err := pudge.Open("errors/"+file, nil)
+		fmt.Println("Proccessing error:", file)
 		if err != nil {
 			return err
 		}
@@ -431,6 +435,8 @@ func checkErr() (err error) {
 			}
 		}
 		db.DeleteFile()
+		// sleep 3 seconds to prevent throttling CH
+		time.Sleep(3 * time.Second)
 	}
 	return
 }
