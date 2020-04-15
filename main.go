@@ -28,7 +28,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.5"
+	version        = "0.1.6"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	unixs          = flag.String("unixs", "", "unix socket")
 	stdlib         = flag.Bool("stdlib", false, "use stdlib")
