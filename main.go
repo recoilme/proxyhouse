@@ -10,18 +10,17 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	_ "expvar"
 
 	"github.com/marpaia/graphite-golang"
+	"github.com/recoilme/graceful"
 	"github.com/recoilme/pudge"
 	"github.com/tidwall/evio"
 )
@@ -102,23 +101,30 @@ func main() {
 	// Wait for interrupt signal to gracefully shutdown the server with
 	// setup signal catching
 	quit := make(chan os.Signal, 1)
-	// catch all signals since not explicitly listing
-	signal.Notify(quit)
-	// method invoked upon seeing signal
-	go func() {
-		q := <-quit
-		fmt.Printf("\nRECEIVED SIGNAL: %s\n", q)
-		//ignore broken pipe?
-		if q == syscall.SIGPIPE || q.String() == "broken pipe" || q.String() == "window size changes" {
-			return
-		}
-		store.cancelSyncer()
-		fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
-		fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
+	fallback := func() error {
+		fmt.Println("Some signal - ignored")
+		return nil
+	}
+	graceful.Unignore(quit, fallback, graceful.Terminate...)
+	/*
+		// catch all signals since not explicitly listing
+		signal.Notify(quit)
+		// method invoked upon seeing signal
+		go func() {
+			q := <-quit
+			fmt.Printf("\nRECEIVED SIGNAL: %s\n", q)
+			//ignore broken pipe?
+			if q == syscall.SIGPIPE || q.String() == "broken pipe" || q.String() == "window size changes" {
+				return
+			}
+			store.cancelSyncer()
+			fmt.Printf("TotalConnections:%d, CurrentConnections:%d\r\n", atomic.LoadUint32(&totalConnections), atomic.LoadInt32(&currConnections))
+			fmt.Printf("In:%d, Out:%d\r\n", atomic.LoadUint32(&in), atomic.LoadUint32(&out))
 
-		time.Sleep(time.Duration(*syncsec) * time.Second)
-		os.Exit(1)
-	}()
+			time.Sleep(time.Duration(*syncsec) * time.Second)
+			os.Exit(1)
+		}()
+	*/
 
 	var events evio.Events
 	switch *balance {
