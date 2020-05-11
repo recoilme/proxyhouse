@@ -112,7 +112,7 @@ func main() {
 	}
 	http.HandleFunc("/", dorequest)
 	http.HandleFunc("/status", showstatus)
-	http.HandleFunc("/stats", showstatistic)
+	http.HandleFunc("/statistic", showstatistic)
 	err := server.ListenAndServe()
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
@@ -121,35 +121,46 @@ func main() {
 }
 
 func dorequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
+	if r.URL.Path != "/" {
+		http.Error(w, "404 not found.", http.StatusNotFound)
+		return
+	}
+
+	switch r.Method {
+	case "GET":
 		date := time.Now().UTC().Format(http.TimeFormat)
 		w.Header().Set("Date", date)
 		w.Header().Set("Server", "proxyhouse "+version)
 		w.Header().Set("Connection", "Closed")
 		fmt.Fprint(w, "status = \"OK\"\r\n")
 		return
-	}
-	bodybytes, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		return
-	}
-	body := string(bodybytes)
-	uri := r.URL.String()
-	if len(body) > 0 {
-		store.Lock()
-		_, ok := store.Req[uri]
-		if !ok {
-			store.Req[uri] = make([]byte, 0, buffersize)
-		} else {
-			store.Req[uri] = append(store.Req[uri], []byte(*delim)...)
-		}
-		store.Req[uri] = append(store.Req[uri], body...)
 
-		store.Unlock()
-		atomic.AddUint32(&in, 1)
-		gr.SimpleSend(fmt.Sprintf("%s.requests_received", *graphiteprefix), "1")
-		table := extractTable(uri)
-		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
+	case "POST":
+		body, err := ioutil.ReadAll(r.Body)
+		if err != nil {
+			return
+		}
+		defer r.Body.Close()
+		uri := r.URL.RawPath + "?" + r.URL.RawQuery
+		if len(body) > 0 {
+			store.Lock()
+			_, ok := store.Req[uri]
+			if !ok {
+				store.Req[uri] = make([]byte, 0, buffersize)
+			} else {
+				store.Req[uri] = append(store.Req[uri], []byte(*delim)...)
+			}
+			store.Req[uri] = append(store.Req[uri], body...)
+
+			store.Unlock()
+			atomic.AddUint32(&in, 1)
+			gr.SimpleSend(fmt.Sprintf("%s.requests_received", *graphiteprefix), "1")
+			table := extractTable(uri)
+			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
+		}
+
+	default:
+		fmt.Fprintf(w, "Sorry, only GET and POST methods are supported.")
 	}
 }
 
