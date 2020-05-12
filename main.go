@@ -138,6 +138,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 	case "POST":
 		body, err := ioutil.ReadAll(r.Body)
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer r.Body.Close()
@@ -160,7 +161,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 	default:
-		fmt.Fprintf(w, "Sorry, only GET and POST methods are supported.")
+		http.Error(w, "Sorry, only GET and POST methods are supported.", http.StatusMethodNotAllowed)
 	}
 }
 
