@@ -325,6 +325,8 @@ func send(key string, val []byte, silent bool) (err error) {
 			pudge.Close(db)
 		}
 		return
+	} else {
+		status = "OK\r\n"
 	}
 	defer resp.Body.Close()
 	return
