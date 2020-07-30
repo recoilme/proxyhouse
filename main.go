@@ -65,6 +65,7 @@ var out uint32              //out requests
 var errorsCheck uint32      // Number of errors Check
 var gr *graphite.Graphite
 var buffersize = 1024 * 8
+var hostname string
 
 func main() {
 	flag.Parse()
@@ -89,6 +90,11 @@ func main() {
 	} else {
 		gr = graphite.NewGraphiteNop(*graphitehost, *graphiteport)
 	}
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
+	hostname = strings.ReplaceAll(host, ".", "_")
 
 	letspanic := checkErr()
 	if letspanic != nil {
@@ -113,7 +119,7 @@ func main() {
 	http.HandleFunc("/", dorequest)
 	http.HandleFunc("/status", showstatus)
 	http.HandleFunc("/statistic", showstatistic)
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 		os.Exit(1)
@@ -156,6 +162,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 			store.Unlock()
 			atomic.AddUint32(&in, 1)
 			gr.SimpleSend(fmt.Sprintf("%s.requests_received", *graphiteprefix), "1")
+			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_received", *graphiteprefix, hostname), "1")
 			table := extractTable(uri)
 			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
 		}
@@ -293,11 +300,14 @@ func send(key string, val []byte, silent bool) (err error) {
 	slices := bytes.Split(val, []byte(*delim))
 	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
 	gr.SimpleSend(fmt.Sprintf("%s.requests_sent", *graphiteprefix), "1")
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_sent", *graphiteprefix, hostname), "1")
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
 
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
 		fmt.Printf("%s\n", err)
 		if silent && len(val) > 0 {
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
@@ -314,6 +324,7 @@ func send(key string, val []byte, silent bool) (err error) {
 		fmt.Printf("%s\n", err)
 		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
 		if resp != nil {
 			bodyResp, _ := ioutil.ReadAll(resp.Body)
 			fmt.Printf("Response: status: %d body:%s \n", resp.StatusCode, bodyResp)
@@ -325,6 +336,8 @@ func send(key string, val []byte, silent bool) (err error) {
 			pudge.Close(db)
 		}
 		return
+	} else {
+		status = "OK\r\n"
 	}
 	defer resp.Body.Close()
 	return
