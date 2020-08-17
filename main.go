@@ -39,10 +39,13 @@ var (
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
 	graphiteprefix = flag.String("graphiteprefix", "relap.count.proxyhouse", "graphite prefix")
+	grayloghost    = flag.String("grayloghost", "", "graphite host")
+	graylogport    = flag.Int("graylogport", 12201, "graphite port")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
 	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 
-	status = "OK\r\n"
+	status           = "OK\r\n"
+	graylog *Graylog = nil
 )
 
 type conn struct {
@@ -96,6 +99,11 @@ func main() {
 	}
 	hostname = strings.ReplaceAll(host, ".", "_")
 
+	if *grayloghost != "" {
+		graylog = NewGraylog(Graylog{Host: *grayloghost, Port: *graylogport})
+		graylog.Info("Start proxyhouse")
+	}
+
 	letspanic := checkErr()
 	if letspanic != nil {
 		panic(letspanic)
@@ -106,6 +114,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	fallback := func() error {
 		fmt.Println("Some signal - ignored")
+		grlog(LEVEL_INFO, "Some signal - ignored")
 		return nil
 	}
 	graceful.Unignore(quit, fallback, graceful.Terminate...)
@@ -123,6 +132,14 @@ func main() {
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 		os.Exit(1)
+	}
+}
+
+func grlog(level uint8, data ...interface{}) {
+	if graylog != nil {
+		graylog.Log(level, data...)
+	} else {
+		fmt.Println(data...)
 	}
 }
 
@@ -165,6 +182,9 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_received", *graphiteprefix, hostname), "1")
 			table := extractTable(uri)
 			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
+			gr.SimpleSend(fmt.Sprintf("%s.bytes_received", *graphiteprefix), fmt.Sprintf("%d", len(body)))
+			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_received", *graphiteprefix, hostname), fmt.Sprintf("%d", len(body)))
+			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_received", *graphiteprefix, table), fmt.Sprintf("%d", len(body)))
 		}
 
 	default:
@@ -304,11 +324,15 @@ func send(key string, val []byte, silent bool) (err error) {
 	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_sent", *graphiteprefix, hostname), "1")
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
+	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", len(val)))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(val)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(val)))
 
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
-		fmt.Printf("%s\n", err)
+		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
+		grlog(LEVEL_ERR, "Request error: ", uri, " error: ", err)
 		if silent && len(val) > 0 {
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
 			pudge.Set(db, key, val)
@@ -321,13 +345,14 @@ func send(key string, val []byte, silent bool) (err error) {
 		err = errors.New("Error: response code not 200")
 	}
 	if err != nil {
-		fmt.Printf("%s\n", err)
+		grlog(LEVEL_ERR, "Request error: ", uri, " error: ", err)
 		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
 		if resp != nil {
 			bodyResp, _ := ioutil.ReadAll(resp.Body)
-			fmt.Printf("Response: status: %d body:%s \n", resp.StatusCode, bodyResp)
+			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", bodyResp)
 		}
 		if silent && len(val) > 0 {
 
@@ -355,7 +380,7 @@ func checkErr() (err error) {
 	sort.Sort(sort.StringSlice(list))
 	for _, file := range list {
 		db, err := pudge.Open("errors/"+file, nil)
-		fmt.Println("Proccessing error:", file)
+		grlog(LEVEL_ERR, "Proccessing error:", file)
 		if err != nil {
 			return err
 		}
@@ -389,7 +414,7 @@ func filePathWalkDir(root string) ([]string, error) {
 	var files []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Println(err.Error())
+			grlog(LEVEL_ERR, "dirwalk error ", err)
 			return err
 		}
 		if !info.IsDir() {
