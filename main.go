@@ -28,7 +28,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.6"
+	version        = "0.1.7"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	readtimeout    = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
@@ -39,8 +39,8 @@ var (
 	graphitehost   = flag.String("graphitehost", "", "graphite host")
 	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
 	graphiteprefix = flag.String("graphiteprefix", "relap.count.proxyhouse", "graphite prefix")
-	grayloghost    = flag.String("grayloghost", "", "graphite host")
-	graylogport    = flag.Int("graylogport", 12201, "graphite port")
+	grayloghost    = flag.String("grayloghost", "", "graylog host")
+	graylogport    = flag.Int("graylogport", 12201, "graylog port")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
 	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
 
