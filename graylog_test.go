@@ -39,7 +39,7 @@ func TestGraylog(t *testing.T) {
 		t.Errorf("Full2: want\n%s\ngot\n%s", long_message, msg.Full)
 	}
 
-	msg.Timestamp = "1594916275.282"
+	msg.Timestamp = 1594916275
 	compressed, err := gl.PackMessage(msg)
 	if err != nil {
 		panic(err)
@@ -57,7 +57,7 @@ func TestGraylog(t *testing.T) {
 	}
 	r.Close()
 
-	want := "{\"version\":\"1.1\",\"host\":\"testhostname\",\"timestamp\":\"1594916275.282\",\"file\":\"screwdriver\",\"level\":6,\"short_message\":\"" + short_message + "\",\"full_message\":\"" + long_message + "\"}"
+	want := "{\"version\":\"1.1\",\"host\":\"testhostname\",\"timestamp\":1594916275,\"file\":\"screwdriver\",\"level\":6,\"short_message\":\"" + short_message + "\",\"full_message\":\"" + long_message + "\"}"
 	if n != len(want) {
 		t.Errorf("JSON length: want %d; got %d", len(want), n)
 	}
