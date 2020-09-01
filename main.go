@@ -43,6 +43,8 @@ var (
 	graylogport    = flag.Int("graylogport", 12201, "graylog port")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
 	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
+	warnlevel      = flag.Int("w", 400, "error counts for warning level")
+	critlevel      = flag.Int("c", 500, "error counts for error level")
 
 	status           = "OK\r\n"
 	graylog *Graylog = nil
@@ -193,10 +195,21 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func showstatus(w http.ResponseWriter, r *http.Request) {
+	errcount := 0
+	list, err := filePathWalkDir("errors")
+	if err != nil {
+		errcount = len(list)
+	}
+
 	date := time.Now().UTC().Format(http.TimeFormat)
 	w.Header().Set("Date", date)
 	w.Header().Set("Server", "proxyhouse "+version)
 	w.Header().Set("Connection", "Closed")
+	if errcount >= *critlevel {
+		w.WriteHeader(http.StatusInternalServerError)
+	} else if errcount >= *warnlevel {
+		w.WriteHeader(http.StatusBadRequest)
+	}
 	fmt.Fprintf(w, "status:%s", status)
 }
 
