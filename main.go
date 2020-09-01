@@ -197,7 +197,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 func showstatus(w http.ResponseWriter, r *http.Request) {
 	errcount := 0
 	list, err := filePathWalkDir("errors")
-	if err != nil {
+	if err == nil {
 		errcount = len(list)
 	}
 
