@@ -302,6 +302,20 @@ func extractTable(key string) string {
 	return table
 }
 
+// вырезаем из строки password=xxxxx для логов
+func hidePassword(str string) string {
+	replace := "password="
+	pos := strings.Index(str, replace)
+	if pos < 0 {
+		return str
+	}
+	pos2 := strings.Index(str[pos:], "&")
+	if pos2 < 0 {
+		return str[0:pos+len(replace)] + "*"
+	}
+	return str[0:pos+len(replace)] + "*" + str[pos+pos2:]
+}
+
 //sender
 func send(key string, val []byte, silent bool) (err error) {
 	if *isdebug {
@@ -332,7 +346,7 @@ func send(key string, val []byte, silent bool) (err error) {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
-		grlog(LEVEL_ERR, "Request error: ", uri, " error: ", err)
+		grlog(LEVEL_ERR, "Create request error: ", hidePassword(uri), " error: ", err)
 		if silent && len(val) > 0 {
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
 			pudge.Set(db, key, val)
@@ -345,14 +359,14 @@ func send(key string, val []byte, silent bool) (err error) {
 		err = errors.New("Error: response code not 200")
 	}
 	if err != nil {
-		grlog(LEVEL_ERR, "Request error: ", uri, " error: ", err)
+		grlog(LEVEL_ERR, "Request error: ", hidePassword(uri), " error: ", err)
 		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
 		if resp != nil {
 			bodyResp, _ := ioutil.ReadAll(resp.Body)
-			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", bodyResp)
+			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", string(bodyResp))
 		}
 		if silent && len(val) > 0 {
 
