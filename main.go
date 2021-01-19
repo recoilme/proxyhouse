@@ -188,7 +188,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_received", *graphiteprefix, hostname), fmt.Sprintf("%d", len(body)))
 			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_received", *graphiteprefix, table), fmt.Sprintf("%d", len(body)))
 			w.Header().Set("Server", "proxyhouse "+version)
-			w.Header().Set("Content-type", "Content-Type: text/tab-separated-values; charset=UTF-8")
+			w.Header().Set("Content-type", "text/tab-separated-values; charset=UTF-8")
 		} else {
 			http.Error(w, "No data given.", http.StatusMethodNotAllowed)
 		}
