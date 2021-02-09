@@ -169,12 +169,17 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 		uri := r.URL.RawPath + "?" + r.URL.RawQuery
 		if len(body) > 0 {
+			delimiter := []byte(*delim)
+			q := r.URL.Query().Get("query")
+			if strings.HasSuffix(q, "FORMAT TSV") || strings.HasSuffix(q, "FORMAT CSV") {
+				delimiter = []byte("")
+			}
 			store.Lock()
 			_, ok := store.Req[uri]
 			if !ok {
 				store.Req[uri] = make([]byte, 0, buffersize)
 			} else {
-				store.Req[uri] = append(store.Req[uri], []byte(*delim)...)
+				store.Req[uri] = append(store.Req[uri], delimiter...)
 			}
 			store.Req[uri] = append(store.Req[uri], body...)
 
