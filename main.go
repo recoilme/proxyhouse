@@ -28,7 +28,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.7"
+	version        = "0.1.8"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	readtimeout    = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
