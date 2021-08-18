@@ -28,7 +28,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.8"
+	version        = "0.1.9"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	readtimeout    = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
@@ -55,13 +55,18 @@ type conn struct {
 	addr string
 }
 
+type Buffer struct {
+	rowcount int
+	buffer   []byte
+}
+
 type Store struct {
 	sync.RWMutex
-	Req          map[string][]byte
+	Req          map[string]*Buffer
 	cancelSyncer context.CancelFunc
 }
 
-var store = &Store{Req: make(map[string][]byte, 0)}
+var store = &Store{Req: make(map[string]*Buffer, 0)}
 var totalConnections uint32 // Total number of connections opened since the server started running
 var currConnections int32   // Number of open connections
 var idleConnections int32   // Number of idle connections
@@ -170,18 +175,24 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 		uri := r.URL.RawPath + "?" + r.URL.RawQuery
 		if len(body) > 0 {
 			delimiter := []byte(*delim)
+			separator := []byte("),")
+			addrows := 1
 			q := r.URL.Query().Get("query")
 			if strings.HasSuffix(q, "FORMAT TSV") || strings.HasSuffix(q, "FORMAT CSV") {
 				delimiter = []byte("")
+				separator = []byte("\n")
+				addrows = 0
 			}
 			store.Lock()
-			_, ok := store.Req[uri]
+			buf, ok := store.Req[uri]
 			if !ok {
-				store.Req[uri] = make([]byte, 0, buffersize)
+				buf = &Buffer{rowcount: 0, buffer: make([]byte, 0, buffersize)}
 			} else {
-				store.Req[uri] = append(store.Req[uri], delimiter...)
+				buf.buffer = append(buf.buffer, delimiter...)
 			}
-			store.Req[uri] = append(store.Req[uri], body...)
+			buf.buffer = append(buf.buffer, body...)
+			buf.rowcount += addrows + bytes.Count(body, separator)
+			store.Req[uri] = buf
 
 			store.Unlock()
 			atomic.AddUint32(&in, 1)
@@ -283,7 +294,7 @@ func (store *Store) backgroundManager(interval int) {
 					val := store.Req[key]
 					//val := new(bytes.Buffer)
 					//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
-					send(key, val, true)
+					send(key, val.buffer, val.rowcount, true)
 					delete(store.Req, key)
 					store.Unlock()
 					//send 2 ch
@@ -339,7 +350,7 @@ func hidePassword(str string) string {
 }
 
 //sender
-func send(key string, val []byte, silent bool) (err error) {
+func send(key string, val []byte, rowcount int, silent bool) (err error) {
 	if *isdebug {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
@@ -353,16 +364,16 @@ func send(key string, val []byte, silent bool) (err error) {
 	}
 	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
-	slices := bytes.Split(val, []byte(*delim))
-	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
+	bytes := len(val)
+	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.requests_sent", *graphiteprefix), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_sent", *graphiteprefix, hostname), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", len(val)))
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(val)))
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(val)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", bytes))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", bytes))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", bytes))
 
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
@@ -391,7 +402,6 @@ func send(key string, val []byte, silent bool) (err error) {
 			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", string(bodyResp))
 		}
 		if silent && len(val) > 0 {
-
 			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
 			pudge.Set(db, key, val)
 			pudge.Close(db)
@@ -433,7 +443,7 @@ func checkErr() (err error) {
 			}
 			//buf := new(bytes.Buffer)
 			//io.Copy(buf, bytes.NewReader(val))
-			err = send(string(key), val, false)
+			err = send(string(key), val, 1, false)
 
 			if err != nil {
 				return err
