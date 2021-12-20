@@ -438,7 +438,6 @@ func checkErr() (err error) {
 		return nil
 	}
 	sort.Sort(sort.StringSlice(list))
-	fmt.Println("process files ", list)
 	for _, file := range list {
 		db, err := pudge.Open(ERROR_DIR+"/"+file, nil)
 		grlog(LEVEL_ERR, "Proccessing error:", file)
