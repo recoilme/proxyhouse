@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,7 +29,7 @@ import (
 
 var (
 	errClose       = errors.New("Error closed")
-	version        = "0.1.8"
+	version        = "0.2.0"
 	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	readtimeout    = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
@@ -42,7 +43,7 @@ var (
 	grayloghost    = flag.String("grayloghost", "", "graylog host")
 	graylogport    = flag.Int("graylogport", 12201, "graylog port")
 	isdebug        = flag.Bool("isdebug", false, "debug requests")
-	resendint      = flag.Int("resendint", 60, "resend error interval, in steps")
+	resendint      = flag.Int("resendint", 60, "resend error interval, in seconds")
 	warnlevel      = flag.Int("w", 400, "error counts for warning level")
 	critlevel      = flag.Int("c", 500, "error counts for error level")
 
@@ -50,18 +51,27 @@ var (
 	graylog *Graylog = nil
 )
 
+const (
+	ERROR_DIR = "errors"
+)
+
 type conn struct {
 	is   evio.InputStream
 	addr string
 }
 
+type Buffer struct {
+	rowcount int
+	buffer   []byte
+}
+
 type Store struct {
 	sync.RWMutex
-	Req          map[string][]byte
+	Req          map[string]*Buffer
 	cancelSyncer context.CancelFunc
 }
 
-var store = &Store{Req: make(map[string][]byte, 0)}
+var store = &Store{Req: make(map[string]*Buffer, 0)}
 var totalConnections uint32 // Total number of connections opened since the server started running
 var currConnections int32   // Number of open connections
 var idleConnections int32   // Number of idle connections
@@ -77,7 +87,8 @@ func main() {
 	//fix http client
 	http.DefaultTransport.(*http.Transport).MaxIdleConnsPerHost = 1000
 
-	store.backgroundManager(*syncsec)
+	store.backgroundSender(*syncsec)
+	store.backgroundRecovery(*resendint)
 
 	atomic.StoreUint32(&totalConnections, 0)
 	atomic.StoreInt32(&currConnections, 0)
@@ -106,9 +117,9 @@ func main() {
 		graylog.Info("Start proxyhouse")
 	}
 
-	letspanic := checkErr()
-	if letspanic != nil {
-		panic(letspanic)
+	_, err = os.Stat(ERROR_DIR)
+	if err != nil {
+		panic(err)
 	}
 
 	// Wait for interrupt signal to gracefully shutdown the server with
@@ -170,18 +181,24 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 		uri := r.URL.RawPath + "?" + r.URL.RawQuery
 		if len(body) > 0 {
 			delimiter := []byte(*delim)
+			separator := []byte("),")
+			addrows := 1
 			q := r.URL.Query().Get("query")
 			if strings.HasSuffix(q, "FORMAT TSV") || strings.HasSuffix(q, "FORMAT CSV") {
 				delimiter = []byte("")
+				separator = []byte("\n")
+				addrows = 0
 			}
 			store.Lock()
-			_, ok := store.Req[uri]
+			buf, ok := store.Req[uri]
 			if !ok {
-				store.Req[uri] = make([]byte, 0, buffersize)
+				buf = &Buffer{rowcount: 0, buffer: make([]byte, 0, buffersize)}
 			} else {
-				store.Req[uri] = append(store.Req[uri], delimiter...)
+				buf.buffer = append(buf.buffer, delimiter...)
 			}
-			store.Req[uri] = append(store.Req[uri], body...)
+			buf.buffer = append(buf.buffer, body...)
+			buf.rowcount += addrows + bytes.Count(body, separator)
+			store.Req[uri] = buf
 
 			store.Unlock()
 			atomic.AddUint32(&in, 1)
@@ -205,7 +222,7 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 
 func showstatus(w http.ResponseWriter, r *http.Request) {
 	errcount := 0
-	list, err := filePathWalkDir("errors")
+	list, err := filePathWalkDir(ERROR_DIR)
 	if err == nil {
 		errcount = len(list)
 	}
@@ -248,9 +265,9 @@ func statelistener(c net.Conn, cs http.ConnState) {
 	}
 }
 
-// backgroundManager runs continuously in the background and performs various
+// backgroundSender runs continuously in the background and performs various
 // operations such as forward requests.
-func (store *Store) backgroundManager(interval int) {
+func (store *Store) backgroundSender(interval int) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store.cancelSyncer = cancel
 	go func() {
@@ -261,37 +278,39 @@ func (store *Store) backgroundManager(interval int) {
 				return
 			default:
 				atomic.AddUint32(&errorsCheck, 1)
-				currCheck := atomic.LoadUint32(&errorsCheck)
-				if currCheck%uint32(*resendint) == 0 {
-					nopanic := checkErr()
-					if nopanic != nil {
-						fmt.Println("nopanic:", nopanic.Error())
-					}
-				}
-				//keys reader
-				store.RLock()
-				keys := make([]string, 0)
-				for key := range store.Req {
-					keys = append(keys, key)
-				}
-				store.RUnlock()
-
+				store.Lock()
+				requests := store.Req
+				store.Req = make(map[string]*Buffer)
+				store.Unlock()
 				//keys itterator
-				for _, key := range keys {
-					//read as fast as possible and return mutex
-					store.Lock()
-					val := store.Req[key]
-					//val := new(bytes.Buffer)
-					//_, err := io.Copy(val, bytes.NewReader(store.Req[key]))
-					send(key, val, true)
-					delete(store.Req, key)
-					store.Unlock()
-					//send 2 ch
+				for key, val := range requests {
+					send(key, val.buffer, val.rowcount, 0)
 					atomic.AddUint32(&out, 1)
 
 				}
 				time.Sleep(time.Duration(interval) * time.Second)
 			}
+		}
+	}()
+}
+
+// backgroundRecovery run continuously in background and try recovery errors
+func (store *Store) backgroundRecovery(interval int) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store.cancelSyncer = cancel
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("backgroundManager - canceled")
+				return
+			default:
+				nopanic := checkErr()
+				if nopanic != nil {
+					fmt.Println("nopanic:", nopanic.Error())
+				}
+			}
+			time.Sleep(time.Duration(interval) * time.Second)
 		}
 	}()
 }
@@ -338,8 +357,18 @@ func hidePassword(str string) string {
 	return str[0:pos+len(replace)] + "*" + str[pos+pos2:]
 }
 
+func saveToErrors(key string, val []byte, level int) {
+	prefix := strconv.Itoa(level)
+	if level >= 10 {
+		prefix = "O"
+	}
+	db := fmt.Sprintf("%s/%s%d", ERROR_DIR, prefix, time.Now().UnixNano())
+	pudge.Set(db, key, val)
+	pudge.Close(db)
+}
+
 //sender
-func send(key string, val []byte, silent bool) (err error) {
+func send(key string, val []byte, rowcount int, level int) (err error) {
 	if *isdebug {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
@@ -353,30 +382,29 @@ func send(key string, val []byte, silent bool) (err error) {
 	}
 	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
-	slices := bytes.Split(val, []byte(*delim))
-	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", len(slices)))
+	bytes := len(val)
+	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.requests_sent", *graphiteprefix), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_sent", *graphiteprefix, hostname), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(slices)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", rowcount))
 	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", len(val)))
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", len(val)))
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", len(val)))
+	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", bytes))
+	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", bytes))
+	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", bytes))
 
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
 		grlog(LEVEL_ERR, "Create request error: ", hidePassword(uri), " error: ", err)
-		if silent && len(val) > 0 {
-			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
-			pudge.Set(db, key, val)
-			pudge.Close(db)
+		if len(val) > 0 {
+			saveToErrors(key, val, level+1)
 		}
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
+	defer resp.Body.Close()
 	if err == nil && resp.StatusCode != 200 {
 		err = errors.New("Error: response code not 200")
 	}
@@ -390,22 +418,18 @@ func send(key string, val []byte, silent bool) (err error) {
 			bodyResp, _ := ioutil.ReadAll(resp.Body)
 			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", string(bodyResp))
 		}
-		if silent && len(val) > 0 {
-
-			db := fmt.Sprintf("errors/%d", time.Now().UnixNano())
-			pudge.Set(db, key, val)
-			pudge.Close(db)
+		if len(val) > 0 {
+			saveToErrors(key, val, level+1)
 		}
 		return
 	} else {
 		status = "OK\r\n"
 	}
-	defer resp.Body.Close()
 	return
 }
 
 func checkErr() (err error) {
-	list, err := filePathWalkDir("errors")
+	list, err := filePathWalkDir(ERROR_DIR)
 	if err != nil {
 		if err.Error() != "lstat errors: no such file or directory" {
 			return err
@@ -415,7 +439,7 @@ func checkErr() (err error) {
 	}
 	sort.Sort(sort.StringSlice(list))
 	for _, file := range list {
-		db, err := pudge.Open("errors/"+file, nil)
+		db, err := pudge.Open(ERROR_DIR+"/"+file, nil)
 		grlog(LEVEL_ERR, "Proccessing error:", file)
 		if err != nil {
 			return err
@@ -431,17 +455,15 @@ func checkErr() (err error) {
 			if err != nil {
 				return err
 			}
-			//buf := new(bytes.Buffer)
-			//io.Copy(buf, bytes.NewReader(val))
-			err = send(string(key), val, false)
-
+			level, err := strconv.Atoi(file[0:1])
 			if err != nil {
-				return err
+				// if filename first symbol not digit skip
+				continue
 			}
+			send(string(key), val, 1, level)
+			time.Sleep(time.Second)
 		}
 		db.DeleteFile()
-		// sleep 3 seconds to prevent throttling CH
-		time.Sleep(3 * time.Second)
 	}
 	return
 }
@@ -453,10 +475,9 @@ func filePathWalkDir(root string) ([]string, error) {
 			grlog(LEVEL_ERR, "dirwalk error ", err)
 			return err
 		}
-		if !info.IsDir() {
-			if !strings.HasSuffix(path, ".idx") {
-				files = append(files, filepath.Base(path))
-			}
+		filename := filepath.Base(path)
+		if !info.IsDir() && !strings.HasSuffix(filename, ".idx") && !strings.HasPrefix(filename, "O") {
+			files = append(files, filename)
 
 		}
 		return nil
