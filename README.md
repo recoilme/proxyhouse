@@ -91,8 +91,10 @@ In case of errors:
 
 - wrong request (not POST with INSERT)-> send to 400 to client and grafite wrong_requests
 - clickhouse is down -> Send to graphite ch_errors count (+1) -> write packets to errors dir (by interval)
-- every 60 steps - try to resend packets from errors folder -> on error - silently skip
-- on start, if errors folder not empty -> try resend packets from errors folder to clickhouse -> on error - panic (manualy delete errors folder)
+- every 60 seconds (set by option "resendint") - try to resend packets from errors folder,
+  on error increments the first digit in the packet file name, after 10 errors set the first character
+  of the file name to "O" and further ignore such packets
+- at startup checks the existence of the directory for errors, if not then panic
 
 ## Params
 
