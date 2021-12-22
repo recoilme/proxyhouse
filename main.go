@@ -277,7 +277,6 @@ func (store *Store) backgroundSender(interval int) {
 				fmt.Println("backgroundManager - canceled")
 				return
 			default:
-				atomic.AddUint32(&errorsCheck, 1)
 				store.Lock()
 				requests := store.Req
 				store.Req = make(map[string]*Buffer)
@@ -305,6 +304,7 @@ func (store *Store) backgroundRecovery(interval int) {
 				fmt.Println("backgroundManager - canceled")
 				return
 			default:
+				atomic.AddUint32(&errorsCheck, 1)
 				nopanic := checkErr()
 				if nopanic != nil {
 					fmt.Println("nopanic:", nopanic.Error())
