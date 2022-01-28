@@ -28,27 +28,29 @@ import (
 )
 
 var (
-	errClose       = errors.New("Error closed")
-	version        = "0.2.0"
-	port           = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
-	keepalive      = flag.Int("keepalive", 10, "keepalive connection, in seconds")
-	readtimeout    = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
-	fwd            = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
-	repl           = flag.String("repl", "", "replace this string on forward")
-	delim          = flag.String("delim", ",", "body delimiter")
-	syncsec        = flag.Int("syncsec", 2, "sync interval, in seconds")
-	graphitehost   = flag.String("graphitehost", "", "graphite host")
-	graphiteport   = flag.Int("graphiteport", 2023, "graphite port")
-	graphiteprefix = flag.String("graphiteprefix", "relap.count.proxyhouse", "graphite prefix")
-	grayloghost    = flag.String("grayloghost", "", "graylog host")
-	graylogport    = flag.Int("graylogport", 12201, "graylog port")
-	isdebug        = flag.Bool("isdebug", false, "debug requests")
-	resendint      = flag.Int("resendint", 60, "resend error interval, in seconds")
-	warnlevel      = flag.Int("w", 400, "error counts for warning level")
-	critlevel      = flag.Int("c", 500, "error counts for error level")
+	errClose          = errors.New("Error closed")
+	version           = "0.2.1"
+	port              = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
+	keepalive         = flag.Int("keepalive", 10, "keepalive connection, in seconds")
+	readtimeout       = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
+	fwd               = flag.String("fwd", "http://localhost:8123", "forward to this server (clickhouse)")
+	repl              = flag.String("repl", "", "replace this string on forward")
+	delim             = flag.String("delim", ",", "body delimiter")
+	syncsec           = flag.Int("syncsec", 2, "sync interval, in seconds")
+	graphitehost      = flag.String("graphitehost", "", "graphite host")
+	graphiteport      = flag.Int("graphiteport", 2023, "graphite port")
+	graphiteprefixcnt = flag.String("graphiteprefixcnt", "relap.count.proxyhouse", "graphite prefix for count")
+	graphiteprefixavg = flag.String("graphiteprefixavg", "relap.avg.proxyhouse", "graphite prefix for avg")
+	grayloghost       = flag.String("grayloghost", "", "graylog host")
+	graylogport       = flag.Int("graylogport", 12201, "graylog port")
+	isdebug           = flag.Bool("isdebug", false, "debug requests")
+	resendint         = flag.Int("resendint", 60, "resend error interval, in seconds")
+	warnlevel         = flag.Int("w", 400, "error counts for warning level")
+	critlevel         = flag.Int("c", 500, "error counts for error level")
 
-	status           = "OK\r\n"
-	graylog *Graylog = nil
+	metricStorage *MetricStorage
+	status                 = "OK\r\n"
+	graylog       *Graylog = nil
 )
 
 const (
@@ -117,6 +119,9 @@ func main() {
 		graylog.Info("Start proxyhouse")
 	}
 
+	metricStorage = NewMetricStorage()
+	metricStorage.SendMetrics()
+
 	_, err = os.Stat(ERROR_DIR)
 	if err != nil {
 		panic(err)
@@ -157,6 +162,7 @@ func grlog(level uint8, data ...interface{}) {
 }
 
 func dorequest(w http.ResponseWriter, r *http.Request) {
+	defer handlePanic("dorequest()")
 	if r.URL.Path != "/" {
 		http.Error(w, "404 not found.", http.StatusNotFound)
 		return
@@ -199,16 +205,15 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 			buf.buffer = append(buf.buffer, body...)
 			buf.rowcount += addrows + bytes.Count(body, separator)
 			store.Req[uri] = buf
-
 			store.Unlock()
 			atomic.AddUint32(&in, 1)
-			gr.SimpleSend(fmt.Sprintf("%s.requests_received", *graphiteprefix), "1")
-			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_received", *graphiteprefix, hostname), "1")
+			metricStorage.Increment(*graphiteprefixcnt+".requests_received", 1)
+			metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".requests_received", 1)
 			table := extractTable(uri)
-			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_received", *graphiteprefix, table), "1")
-			gr.SimpleSend(fmt.Sprintf("%s.bytes_received", *graphiteprefix), fmt.Sprintf("%d", len(body)))
-			gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_received", *graphiteprefix, hostname), fmt.Sprintf("%d", len(body)))
-			gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_received", *graphiteprefix, table), fmt.Sprintf("%d", len(body)))
+			metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".requests_received", 1)
+			metricStorage.Increment(*graphiteprefixcnt+".bytes_received", len(body))
+			metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".bytes_received", len(body))
+			metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".bytes_received", len(body))
 			w.Header().Set("Server", "proxyhouse "+version)
 			w.Header().Set("Content-type", "text/tab-separated-values; charset=UTF-8")
 		} else {
@@ -369,6 +374,8 @@ func saveToErrors(key string, val []byte, level int) {
 
 //sender
 func send(key string, val []byte, rowcount int, level int) (err error) {
+	defer handlePanic("send()")
+	start := time.Now()
 	if *isdebug {
 		fmt.Printf("time:%s\tkey:%s\tval:%s\n", time.Now(), key, val)
 	}
@@ -383,20 +390,24 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 	req, err := http.NewRequest("POST", uri /*fmt.Sprintf("%s%s", *fwd, key)*/, bytes.NewBuffer(val))
 
 	bytes := len(val)
-	gr.SimpleSend(fmt.Sprintf("%s.rows_sent", *graphiteprefix), fmt.Sprintf("%d", rowcount))
-	gr.SimpleSend(fmt.Sprintf("%s.requests_sent", *graphiteprefix), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.rows_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", rowcount))
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.requests_sent", *graphiteprefix, hostname), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.rows_sent", *graphiteprefix, table), fmt.Sprintf("%d", rowcount))
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.requests_sent", *graphiteprefix, table), "1")
-	gr.SimpleSend(fmt.Sprintf("%s.bytes_sent", *graphiteprefix), fmt.Sprintf("%d", bytes))
-	gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.bytes_sent", *graphiteprefix, hostname), fmt.Sprintf("%d", bytes))
-	gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.bytes_sent", *graphiteprefix, table), fmt.Sprintf("%d", bytes))
+
+	metricStorage.Increment(*graphiteprefixcnt+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".byhost."+hostname+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".bytable."+table+".bytes_sent", bytes)
 
 	if err != nil {
-		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
-		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
-		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefixcnt), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefixcnt, hostname), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefixcnt, table), "1")
 		grlog(LEVEL_ERR, "Create request error: ", hidePassword(uri), " error: ", err)
 		if len(val) > 0 {
 			saveToErrors(key, val, level+1)
@@ -404,16 +415,24 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
-	defer resp.Body.Close()
+	defer func() {
+		if resp != nil {
+			err = resp.Body.Close()
+		}
+	}()
 	if err == nil && resp.StatusCode != 200 {
 		err = errors.New("Error: response code not 200")
 	}
+	sendDuration := time.Since(start).Milliseconds()
+	metricStorage.Increment("bytesSent", bytes)
+	metricStorage.Increment("sendDuration", int(sendDuration))
+	metricStorage.Increment(*graphiteprefixavg+".byhost."+hostname+".send_duration", int(sendDuration))
 	if err != nil {
 		grlog(LEVEL_ERR, "Request error: ", hidePassword(uri), " error: ", err)
 		status = err.Error() + "\r\n"
-		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefix), "1")
-		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefix, hostname), "1")
-		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefix, table), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefixcnt), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefixcnt, hostname), "1")
+		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefixcnt, table), "1")
 		if resp != nil {
 			bodyResp, _ := ioutil.ReadAll(resp.Body)
 			grlog(LEVEL_ERR, "Response: status: ", resp.StatusCode, " body: ", string(bodyResp))
@@ -483,4 +502,10 @@ func filePathWalkDir(root string) ([]string, error) {
 		return nil
 	})
 	return files, err
+}
+
+func handlePanic(from string) {
+	if r := recover(); r != nil {
+		grlog(LEVEL_ERR, "Recovering from panic:", r, " from:", from)
+	}
 }

@@ -53,7 +53,7 @@ func Test_Base(t *testing.T) {
 	println("done")
 	store.RLock()
 	for req := range store.Req {
-		slices := bytes.Split(store.Req[req], []byte(","))
+		slices := bytes.Split(store.Req[req].buffer, []byte(","))
 		fmt.Printf("store:\n\nuri:%s\nbody:%d\n", req, len(slices))
 	}
 	store.RUnlock()
