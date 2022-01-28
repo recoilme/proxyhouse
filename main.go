@@ -29,7 +29,7 @@ import (
 
 var (
 	errClose          = errors.New("Error closed")
-	version           = "0.2.0"
+	version           = "0.2.1"
 	port              = flag.Int("p", 8124, "TCP port number to listen on (default: 8124)")
 	keepalive         = flag.Int("keepalive", 10, "keepalive connection, in seconds")
 	readtimeout       = flag.Int("readtimeout", 5, "request header read timeout, in seconds")
@@ -207,13 +207,13 @@ func dorequest(w http.ResponseWriter, r *http.Request) {
 			store.Req[uri] = buf
 			store.Unlock()
 			atomic.AddUint32(&in, 1)
-			metricStorage.Increment(*graphiteprefixcnt + ".requests_received")
-			metricStorage.Increment(*graphiteprefixcnt + ".byhost." + hostname + ".requests_received")
+			metricStorage.Increment(*graphiteprefixcnt+".requests_received", 1)
+			metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".requests_received", 1)
 			table := extractTable(uri)
-			metricStorage.Increment(*graphiteprefixcnt + ".bytable." + table + ".requests_received")
-			metricStorage.Update(*graphiteprefixcnt + ".bytes_received", len(body))
-			metricStorage.Update(*graphiteprefixcnt + ".byhost." + hostname + ".bytes_received", len(body))
-			metricStorage.Update(*graphiteprefixcnt + ".bytable." + table + ".bytes_received", len(body))
+			metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".requests_received", 1)
+			metricStorage.Increment(*graphiteprefixcnt+".bytes_received", len(body))
+			metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".bytes_received", len(body))
+			metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".bytes_received", len(body))
 			w.Header().Set("Server", "proxyhouse "+version)
 			w.Header().Set("Content-type", "text/tab-separated-values; charset=UTF-8")
 		} else {
@@ -391,18 +391,18 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 
 	bytes := len(val)
 
-	metricStorage.Update(*graphiteprefixcnt + ".rows_sent", rowcount)
-	metricStorage.Increment(*graphiteprefixcnt + ".requests_sent")
-	metricStorage.Update(*graphiteprefixcnt + ".byhost." + hostname + ".rows_sent", rowcount)
-	metricStorage.Increment(*graphiteprefixcnt + ".byhost." + hostname + ".requests_sent")
-	metricStorage.Update(*graphiteprefixcnt + ".bytable." + table + ".rows_sent", rowcount)
-	metricStorage.Increment(*graphiteprefixcnt + ".bytable." + table + ".requests_sent")
-	metricStorage.Update(*graphiteprefixcnt + ".bytes_sent", bytes)
-	metricStorage.Update(*graphiteprefixcnt + ".byhost." + hostname + ".bytes_sent", bytes)
-	metricStorage.Update(*graphiteprefixcnt + ".bytable." + table + ".bytes_sent", bytes)
-	metricStorage.Update(*graphiteprefixavg + ".bytes_sent", bytes)
-	metricStorage.Update(*graphiteprefixavg + ".byhost." + hostname + ".bytes_sent", bytes)
-	metricStorage.Update(*graphiteprefixavg + ".bytable." + table + ".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixcnt+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".rows_sent", rowcount)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".requests_sent", 1)
+	metricStorage.Increment(*graphiteprefixcnt+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixcnt+".byhost."+hostname+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixcnt+".bytable."+table+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".byhost."+hostname+".bytes_sent", bytes)
+	metricStorage.Increment(*graphiteprefixavg+".bytable."+table+".bytes_sent", bytes)
 
 	if err != nil {
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefixcnt), "1")
@@ -424,9 +424,9 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 		err = errors.New("Error: response code not 200")
 	}
 	sendDuration := time.Since(start).Milliseconds()
-	metricStorage.Update("bytesSent", bytes)
-	metricStorage.Update("sendDuration", int(sendDuration))
-	metricStorage.Update(*graphiteprefixavg + ".byhost." + hostname + ".send_duration", int(sendDuration))
+	metricStorage.Increment("bytesSent", bytes)
+	metricStorage.Increment("sendDuration", int(sendDuration))
+	metricStorage.Increment(*graphiteprefixavg+".byhost."+hostname+".send_duration", int(sendDuration))
 	if err != nil {
 		grlog(LEVEL_ERR, "Request error: ", hidePassword(uri), " error: ", err)
 		status = err.Error() + "\r\n"

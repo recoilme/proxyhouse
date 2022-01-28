@@ -49,13 +49,7 @@ func (ms *MetricStorage) SendMetrics() {
 	}()
 }
 
-func (ms *MetricStorage) Increment(name string) {
-	ms.mx.Lock()
-	defer ms.mx.Unlock()
-	ms.storage[name]++
-}
-
-func (ms *MetricStorage) Update(name string, value int) {
+func (ms *MetricStorage) Increment(name string, value int) {
 	ms.mx.Lock()
 	defer ms.mx.Unlock()
 	if oldValue, ok := ms.storage[name]; !ok {
