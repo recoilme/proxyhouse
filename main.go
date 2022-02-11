@@ -282,7 +282,6 @@ func (store *Store) backgroundSender(interval int) {
 				fmt.Println("backgroundManager - canceled")
 				return
 			default:
-				atomic.AddUint32(&errorsCheck, 1)
 				store.Lock()
 				requests := store.Req
 				store.Req = make(map[string]*Buffer)
@@ -310,6 +309,7 @@ func (store *Store) backgroundRecovery(interval int) {
 				fmt.Println("backgroundManager - canceled")
 				return
 			default:
+				atomic.AddUint32(&errorsCheck, 1)
 				nopanic := checkErr()
 				if nopanic != nil {
 					fmt.Println("nopanic:", nopanic.Error())
@@ -429,7 +429,6 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 	metricStorage.Increment(*graphiteprefixavg+".byhost."+hostname+".send_duration", int(sendDuration))
 	if err != nil {
 		grlog(LEVEL_ERR, "Request error: ", hidePassword(uri), " error: ", err)
-		status = err.Error() + "\r\n"
 		gr.SimpleSend(fmt.Sprintf("%s.ch_errors", *graphiteprefixcnt), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.byhost.%s.ch_errors", *graphiteprefixcnt, hostname), "1")
 		gr.SimpleSend(fmt.Sprintf("%s.bytable.%s.ch_errors", *graphiteprefixcnt, table), "1")
@@ -441,8 +440,6 @@ func send(key string, val []byte, rowcount int, level int) (err error) {
 			saveToErrors(key, val, level+1)
 		}
 		return
-	} else {
-		status = "OK\r\n"
 	}
 	return
 }
